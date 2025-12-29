@@ -5,6 +5,16 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
+    "alpaca-py>=0.43.2",
+    "beautifulsoup4>=4.14.3",
+    "lxml>=6.0.2",
+    "matplotlib>=3.10.8",
+    "pandas>=2.3.3",
+    "pandas-market-calendars>=5.2.3",
+    "polars>=1.36.1",
     "prefect>=3.6.8",
+    "pyarrow>=22.0.0",
     "python-dotenv>=1.2.1",
+    "requests>=2.32.5",
+    "seaborn>=0.13.2",
 ]
