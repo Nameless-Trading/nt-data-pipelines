@@ -8,6 +8,7 @@ host = os.getenv("HOST")
 port = os.getenv("PORT")
 username = os.getenv("CLICKHOUSE_USER")
 password = os.getenv("CLICKHOUSE_PASSWORD")
+secure = os.getenv("SECURE")
 
 if not (host and port and username and password):
     raise RuntimeError(
@@ -25,5 +26,5 @@ clickhouse_client = get_client(
     port=port,
     username=username,
     password=password,
-    secure=True
+    secure=secure
 )
