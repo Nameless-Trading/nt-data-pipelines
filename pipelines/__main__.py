@@ -1,6 +1,7 @@
 import os
 import httpx
 from dotenv import load_dotenv
+from calendar_flow import calendar_backfill_flow
 
 # Load .env and set custom headers BEFORE importing Prefect
 load_dotenv()
@@ -16,11 +17,5 @@ if cf_access_client_id and cf_access_client_secret:
 from prefect import flow
 
 
-@flow
-def my_flow():
-    print("Hello, Prefect!")
-
-
 if __name__ == "__main__":
-    pass
-    # my_flow.serve(name="my-first-deployment", cron="* * * * *")
+    calendar_backfill_flow().serve(cron="* * * * *")
