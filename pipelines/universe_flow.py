@@ -11,9 +11,15 @@ load_dotenv()
 
 @task
 def get_wikipedia_data() -> tuple[pd.DataFrame]:
+    # Get Wikipedia user agent
+    wikipedia_user_agent = os.getenv("WIKIPEDIA_USER_AGENT")
 
+    if not wikipedia_user_agent:
+        raise ValueError("WIKIPEDIA_USER_AGENT not set!")
+    
+    # Request Wikipedia tables
     wikipedia_url = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
-    headers = {"User-Agent": os.getenv("WIKIPEDIA_USER_AGENT")}
+    headers = {"User-Agent": wikipedia_user_agent}
 
     response = requests.get(wikipedia_url, headers=headers)
     response.raise_for_status()

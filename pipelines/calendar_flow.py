@@ -25,11 +25,8 @@ def get_market_calendar(start: dt.date, end: dt.date) -> pl.DataFrame:
 
     return calendar_df
 
-@flow
-def calendar_backfill_flow(start: dt.date = dt.date(1957, 3, 1), end: dt.date = dt.date.today()):
-    print(start, end)
-    print(start, end)
-    calendar_df = get_market_calendar(start, end)
+@task
+def upload_calendar_df(calendar_df: pl.DataFrame):
     table_name = "calendar"
 
     # Get ClickHouse client
@@ -48,4 +45,12 @@ def calendar_backfill_flow(start: dt.date = dt.date(1957, 3, 1), end: dt.date = 
         ORDER BY date
         """
     )
+
+    # Insert
     clickhouse_client.insert_df_arrow(table=table_name, df=calendar_df)
+
+@flow
+def calendar_backfill_flow(start: dt.date = dt.date(1957, 3, 1), end: dt.date = dt.date.today()):
+    calendar_df = get_market_calendar(start, end)
+    upload_calendar_df(calendar_df)
+    
