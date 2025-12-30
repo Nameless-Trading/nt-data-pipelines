@@ -51,7 +51,7 @@ def get_stock_prices(tickers: list[str], start: dt.datetime, end: dt.datetime) -
         pl.from_pandas(stock_prices_raw.df.reset_index())
         .select(
             pl.col('symbol').alias('ticker'),
-            pl.col('timestamp').dt.convert_time_zone('America/Denver').dt.date().cast(pl.String).alias('date'),
+            pl.col('timestamp').dt.replace_time_zone('UTC').dt.convert_time_zone('America/New_York').dt.date().cast(pl.String).alias('date'),
             'open',
             'high',
             'low',
@@ -125,7 +125,7 @@ def get_last_market_date() -> dt.date:
     last_market_date = clickhouse_client.query("SELECT MAX(date) FROM calendar")
     return dt.datetime.strptime(last_market_date.result_rows[0][0], "%Y-%m-%d").date()
 
-@flow 
+@flow
 def stock_prices_daily_flow():
     last_market_date = get_last_market_date()
     yesterday = (dt.datetime.today().replace(tzinfo=ZoneInfo("America/Denver")) - dt.timedelta(days=1)).date()

@@ -41,7 +41,7 @@ def get_etf_prices(tickers: list[str], start: dt.datetime, end: dt.datetime) -> 
         pl.from_pandas(stock_prices_raw.df.reset_index())
         .select(
             pl.col('symbol').alias('ticker'),
-            pl.col('timestamp').dt.convert_time_zone('America/Denver').dt.date().cast(pl.String).alias('date'),
+            pl.col('timestamp').dt.replace_time_zone('UTC').dt.convert_time_zone('America/New_York').dt.date().cast(pl.String).alias('date'),
             'open',
             'high',
             'low',
