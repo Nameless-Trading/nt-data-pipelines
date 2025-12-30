@@ -2,9 +2,10 @@ import polars as pl
 import pandas as pd
 import datetime as dt
 import pandas_market_calendars as mcal
-from clients import get_clickhouse_client, prefect_client
+from clients import get_clickhouse_client
+from prefect import task, flow
 
-@prefect_client.task
+@task
 def get_market_calendar(start: dt.date, end: dt.date) -> pl.DataFrame:
     # Get NYSE calendar (US stock market)
     nyse = mcal.get_calendar('NYSE')
@@ -24,7 +25,7 @@ def get_market_calendar(start: dt.date, end: dt.date) -> pl.DataFrame:
 
     return calendar_df
 
-@prefect_client.flow
+@flow
 def calendar_backfill_flow(start: dt.date = dt.date(1957, 3, 1), end: dt.date = dt.date.today()):
     print(start, end)
     calendar_df = get_market_calendar(start, end)

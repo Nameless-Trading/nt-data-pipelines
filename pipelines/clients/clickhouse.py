@@ -5,7 +5,6 @@ from dotenv import load_dotenv
 load_dotenv()
 
 def get_clickhouse_client():
-    """Get a ClickHouse client instance. Safe for use in Prefect flows."""
     host = os.getenv("HOST")
     port = os.getenv("PORT")
     username = os.getenv("CLICKHOUSE_USER")
@@ -30,6 +29,3 @@ def get_clickhouse_client():
         password=password,
         secure=secure
     )
-
-# For backwards compatibility with existing code that uses clickhouse_client directly
-clickhouse_client = get_clickhouse_client()
