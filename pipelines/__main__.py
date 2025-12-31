@@ -34,7 +34,7 @@ if __name__ == "__main__":
         etf_prices_backfill_flow.to_deployment(name="etf-prices-backfill-flow"),
         returns_backfill_flow.to_deployment(name="returns-backfill-flow"),
         factor_model_backfill_flow.to_deployment(name="factor-model-backfill-flow"),
-        factor_covariances_daily_flow.to_deployment(
-            name="factor-covariances-daily-flow"
+        factor_covariances_backfill_flow.to_deployment(
+            name="factor-covariances-backfill-flow"
         ),
     )
