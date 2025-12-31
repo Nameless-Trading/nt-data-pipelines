@@ -204,3 +204,39 @@ def factor_model_backfill_flow():
 
     upload_and_merge_factor_loadings(factor_loadings)
     upload_and_merge_idio_vol(idio_vol)
+
+
+@task
+def get_trading_date_range(window: int) -> dt.date:
+    clickhouse_client = get_clickhouse_client()
+    date_range_arrow = clickhouse_client.query_arrow(
+        f"SELECT date FROM calendar ORDER BY date DESC LIMIT {window}"
+    )
+    return pl.from_arrow(date_range_arrow).with_columns(
+        pl.col("date").str.strptime(pl.Date, "%Y-%m-%d")
+    )
+
+
+@flow
+def factor_model_daily_flow():
+    date_range = get_trading_date_range(window=WINDOW * 2)
+
+    start = date_range["date"].min()
+    end = date_range["date"].max()
+
+    yesterday = dt.date.today() - dt.timedelta(days=1)
+
+    # Only get new data if yesterday was the last market date
+    if end != yesterday:
+        return
+
+    stock_returns = get_stock_returns(start, end)
+    etf_returns = get_etf_returns(start, end)
+
+    betas, residuals = estimate_regression(stock_returns, etf_returns)
+
+    factor_loadings = clean_factor_loadings(betas).filter(pl.col("date").eq(str(end)))
+    idio_vol = clean_idio_vol(residuals).filter(pl.col("date").eq(str(end)))
+
+    upload_and_merge_factor_loadings(factor_loadings)
+    upload_and_merge_idio_vol(idio_vol)

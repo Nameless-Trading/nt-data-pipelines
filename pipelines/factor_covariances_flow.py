@@ -96,3 +96,35 @@ def factor_covariances_backfill_flow():
     factor_covariances_clean = clean_factor_covariances(factor_covariances)
 
     upload_and_merge_factor_covariances(factor_covariances_clean)
+
+
+@task
+def get_trading_date_range(window: int) -> dt.date:
+    clickhouse_client = get_clickhouse_client()
+    date_range_arrow = clickhouse_client.query_arrow(
+        f"SELECT date FROM calendar ORDER BY date DESC LIMIT {window}"
+    )
+    return pl.from_arrow(date_range_arrow).with_columns(
+        pl.col("date").str.strptime(pl.Date, "%Y-%m-%d")
+    )
+
+
+@flow
+def factor_covariances_daily_flow():
+    date_range = get_trading_date_range(window=WINDOW)
+
+    start = date_range["date"].min()
+    end = date_range["date"].max()
+
+    yesterday = dt.date.today() - dt.timedelta(days=1)
+
+    # Only get new data if yesterday was the last market date
+    if end != yesterday:
+        return
+
+    etf_returns = get_etf_returns(start, end)
+
+    factor_covariances = estimate_factor_covariances(etf_returns)
+    factor_covariances_clean = clean_factor_covariances(factor_covariances)
+
+    upload_and_merge_factor_covariances(factor_covariances_clean)
