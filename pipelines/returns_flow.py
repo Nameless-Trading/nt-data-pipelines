@@ -1,6 +1,7 @@
 from clients import get_clickhouse_client
 from prefect import task, flow
 
+
 @task
 def materialize_stock_returns():
     clickhouse_client = get_clickhouse_client()
@@ -27,6 +28,7 @@ def materialize_stock_returns():
         """
     )
 
+
 @task
 def materialize_etf_returns():
     clickhouse_client = get_clickhouse_client()
@@ -52,6 +54,7 @@ def materialize_etf_returns():
         FROM transform;
         """
     )
+
 
 @flow
 def returns_backfill_flow():

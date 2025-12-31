@@ -5,10 +5,11 @@ import pandas_market_calendars as mcal
 from clients import get_clickhouse_client
 from prefect import task, flow
 
+
 @task
 def get_market_calendar(start: dt.date, end: dt.date) -> pl.DataFrame:
     # Get NYSE calendar (US stock market)
-    nyse = mcal.get_calendar('NYSE')
+    nyse = mcal.get_calendar("NYSE")
 
     # Get schedule between dates
     schedule = nyse.schedule(start_date=start, end_date=end)
@@ -17,13 +18,14 @@ def get_market_calendar(start: dt.date, end: dt.date) -> pl.DataFrame:
     calendar_df = (
         pl.from_pandas(schedule.reset_index())
         .select(
-            pl.col("index").cast(pl.Date).cast(pl.String).alias('date'),
+            pl.col("index").cast(pl.Date).cast(pl.String).alias("date"),
         )
         .drop_nulls()
-        .sort('date')
+        .sort("date")
     )
 
     return calendar_df
+
 
 @task
 def upload_calendar_df(calendar_df: pl.DataFrame):
@@ -49,10 +51,10 @@ def upload_calendar_df(calendar_df: pl.DataFrame):
     # Insert
     clickhouse_client.insert_df_arrow(table=table_name, df=calendar_df)
 
+
 @flow
 def calendar_backfill_flow():
-    start= dt.date(1957, 3, 1)
-    end = dt.date.today() - dt.timedelta(days=1) # yesterday
+    start = dt.date(1957, 3, 1)
+    end = dt.date.today() - dt.timedelta(days=1)  # yesterday
     calendar_df = get_market_calendar(start, end)
     upload_calendar_df(calendar_df)
-    

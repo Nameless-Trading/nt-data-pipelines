@@ -4,6 +4,7 @@ from clients import get_clickhouse_client
 from prefect import task, flow
 from variables import WINDOW, FACTORS
 
+
 @task
 def get_etf_returns(start: dt.date, end: dt.date) -> pl.DataFrame:
     clickhouse_client = get_clickhouse_client()
@@ -18,11 +19,11 @@ def get_etf_returns(start: dt.date, end: dt.date) -> pl.DataFrame:
         .filter(pl.col("ticker").is_in(FACTORS))
     )
 
+
 @task
 def estimate_factor_covariances(etf_returns: pl.DataFrame) -> pl.DataFrame:
     factor_returns_pd = (
-        etf_returns
-        .sort('ticker', 'date')
+        etf_returns.sort("ticker", "date")
         .pivot(on="ticker", index="date", values="return")
         .to_pandas()
         .set_index("date")
@@ -30,8 +31,7 @@ def estimate_factor_covariances(etf_returns: pl.DataFrame) -> pl.DataFrame:
 
     factor_covariances = (
         pl.from_pandas(
-            factor_returns_pd
-            .rolling(window=WINDOW, min_periods=WINDOW)
+            factor_returns_pd.rolling(window=WINDOW, min_periods=WINDOW)
             .cov()
             .reset_index()
         )
@@ -41,23 +41,28 @@ def estimate_factor_covariances(etf_returns: pl.DataFrame) -> pl.DataFrame:
 
     return factor_covariances
 
+
 @task
 def clean_factor_covariances(factor_covariances: pl.DataFrame) -> pl.DataFrame:
     return (
-        factor_covariances
-        .drop_nulls()
-        .unpivot(index=['date', 'factor_1'], variable_name='factor_2', value_name='covariance')
+        factor_covariances.drop_nulls()
+        .unpivot(
+            index=["date", "factor_1"],
+            variable_name="factor_2",
+            value_name="covariance",
+        )
         .sort("factor_1", "factor_2", "date")
         .with_columns(
-            pl.col('covariance').ewm_mean(half_life=60).over("factor_1", "factor_2"),
-            pl.col('date').cast(pl.String)
+            pl.col("covariance").ewm_mean(half_life=60).over("factor_1", "factor_2"),
+            pl.col("date").cast(pl.String),
         )
     )
+
 
 @task
 def upload_and_merge_factor_covariances(factor_covariances: pl.DataFrame):
     clickhouse_client = get_clickhouse_client()
-    table_name = 'factor_covariances'
+    table_name = "factor_covariances"
 
     # Create table if not exists
     clickhouse_client.command(
@@ -78,6 +83,7 @@ def upload_and_merge_factor_covariances(factor_covariances: pl.DataFrame):
 
     # Optimize table (deduplicate)
     clickhouse_client.command(f"OPTIMIZE TABLE {table_name} FINAL")
+
 
 @flow
 def factor_covariances_backfill_flow():

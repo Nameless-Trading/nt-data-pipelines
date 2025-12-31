@@ -4,6 +4,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+
 def get_clickhouse_client():
     host = os.getenv("HOST")
     port = os.getenv("PORT")
@@ -24,9 +25,5 @@ def get_clickhouse_client():
         )
 
     return get_client(
-        host=host,
-        port=port,
-        username=username,
-        password=password,
-        secure=secure
+        host=host, port=port, username=username, password=password, secure=secure
     )

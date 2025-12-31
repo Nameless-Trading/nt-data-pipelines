@@ -7,6 +7,7 @@ from tqdm import tqdm
 from prefect import task, flow
 from variables import WINDOW, FACTORS, DISABLE_TQDM
 
+
 @task
 def get_stock_returns(start: dt.date, end: dt.date) -> pl.DataFrame:
     clickhouse_client = get_clickhouse_client()
@@ -18,6 +19,7 @@ def get_stock_returns(start: dt.date, end: dt.date) -> pl.DataFrame:
     return pl.from_arrow(stock_returns_arrow).with_columns(
         pl.col("date").str.strptime(pl.Date, "%Y-%m-%d")
     )
+
 
 @task
 def get_etf_returns(start: dt.date, end: dt.date) -> pl.DataFrame:
@@ -33,6 +35,7 @@ def get_etf_returns(start: dt.date, end: dt.date) -> pl.DataFrame:
         .filter(pl.col("ticker").is_in(FACTORS))
     )
 
+
 @task
 def estimate_regression(
     stock_returns: pl.DataFrame, etf_returns: pl.DataFrame
@@ -44,7 +47,9 @@ def estimate_regression(
     )
 
     results = []
-    for ticker in tqdm(df["ticker"].unique(), desc="Estimating factor loadings", disable=DISABLE_TQDM):
+    for ticker in tqdm(
+        df["ticker"].unique(), desc="Estimating factor loadings", disable=DISABLE_TQDM
+    ):
         ticker_df = df.filter(pl.col("ticker") == ticker).sort("date")
 
         if len(ticker_df) < WINDOW:
@@ -78,46 +83,51 @@ def estimate_regression(
         .alias("residual")
     )
 
-    betas = results.select('ticker', 'date', *[f"B_{factor}" for factor in FACTORS])
-    residuals = results.select('ticker', 'date', 'residual')
+    betas = results.select("ticker", "date", *[f"B_{factor}" for factor in FACTORS])
+    residuals = results.select("ticker", "date", "residual")
 
     return betas, residuals
+
 
 @task
 def clean_factor_loadings(factor_loadings: pl.DataFrame) -> pl.DataFrame:
     return (
-        factor_loadings
-        .unpivot(index=['ticker', 'date'], variable_name='factor', value_name='loading')
+        factor_loadings.unpivot(
+            index=["ticker", "date"], variable_name="factor", value_name="loading"
+        )
         .drop_nulls()
         .sort("ticker", "date")
         .with_columns(
-            pl.col('factor').replace({
-                f'B_{factor}': factor for factor in FACTORS
-            })
+            pl.col("factor").replace({f"B_{factor}": factor for factor in FACTORS})
         )
         .with_columns(
             pl.col("loading").ewm_mean(half_life=60).over("ticker", "factor"),
-            pl.col('date').cast(pl.String)
+            pl.col("date").cast(pl.String),
         )
     )
+
 
 @task
 def clean_idio_vol(residuals: pl.DataFrame) -> pl.DataFrame:
     return (
-        residuals
-        .drop_nulls()
-        .sort('ticker', 'date')
+        residuals.drop_nulls()
+        .sort("ticker", "date")
         .select(
             "ticker",
-            pl.col('date').cast(pl.String),
-            pl.col("residual").rolling_std(window_size=WINDOW).ewm_mean(half_life=60).over('ticker').alias("idio_vol"),
+            pl.col("date").cast(pl.String),
+            pl.col("residual")
+            .rolling_std(window_size=WINDOW)
+            .ewm_mean(half_life=60)
+            .over("ticker")
+            .alias("idio_vol"),
         )
     )
+
 
 @task
 def upload_and_merge_factor_loadings(factor_loadings: pl.DataFrame) -> pl.DataFrame:
     clickhouse_client = get_clickhouse_client()
-    table_name = 'factor_loadings'
+    table_name = "factor_loadings"
 
     # Create table if not exists
     clickhouse_client.command(
@@ -137,17 +147,20 @@ def upload_and_merge_factor_loadings(factor_loadings: pl.DataFrame) -> pl.DataFr
     batch_size = 1_000_000
     total_rows = len(factor_loadings)
 
-    for i in tqdm(range(0, total_rows, batch_size), desc="Inserting batches", disable=DISABLE_TQDM):
+    for i in tqdm(
+        range(0, total_rows, batch_size), desc="Inserting batches", disable=DISABLE_TQDM
+    ):
         batch = factor_loadings.slice(i, batch_size)
         clickhouse_client.insert_df_arrow(table_name, batch)
 
     # Optimize table (deduplicate)
     clickhouse_client.command(f"OPTIMIZE TABLE {table_name} FINAL")
 
+
 @task
 def upload_and_merge_idio_vol(idio_vol: pl.DataFrame) -> pl.DataFrame:
     clickhouse_client = get_clickhouse_client()
-    table_name = 'idio_vol'
+    table_name = "idio_vol"
 
     # Create table if not exists
     clickhouse_client.command(
@@ -166,7 +179,9 @@ def upload_and_merge_idio_vol(idio_vol: pl.DataFrame) -> pl.DataFrame:
     batch_size = 1_000_000
     total_rows = len(idio_vol)
 
-    for i in tqdm(range(0, total_rows, batch_size), desc="Inserting batches", disable=DISABLE_TQDM):
+    for i in tqdm(
+        range(0, total_rows, batch_size), desc="Inserting batches", disable=DISABLE_TQDM
+    ):
         batch = idio_vol.slice(i, batch_size)
         clickhouse_client.insert_df_arrow(table_name, batch)
 
