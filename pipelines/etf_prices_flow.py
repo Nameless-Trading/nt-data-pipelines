@@ -132,12 +132,15 @@ def get_last_market_date() -> dt.date:
 def etf_prices_daily_flow():
     last_market_date = get_last_market_date()
     yesterday = (
-        dt.datetime.today().replace(tzinfo=ZoneInfo("America/Denver"))
+        dt.datetime.now(ZoneInfo("America/Denver"))
         - dt.timedelta(days=1)
     ).date()
 
     # Only get new data if yesterday was the last market date
     if last_market_date != yesterday:
+        print("Market was not open yesterday!")
+        print("Last Market Date:", last_market_date)
+        print("Yesterday:", yesterday)
         return
 
     start = dt.datetime.combine(yesterday, dt.time(0, 0, 0)).replace(
