@@ -5,8 +5,7 @@ from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
 import datetime as dt
 import polars as pl
 from prefect import flow, task
-from zoneinfo import ZoneInfo
-
+from variables import TIME_ZONE
 
 @task
 def get_tickers() -> list[str]:
@@ -54,8 +53,6 @@ def get_stock_prices(
     stock_prices_clean = pl.from_pandas(stock_prices_raw.df.reset_index()).select(
         pl.col("symbol").alias("ticker"),
         pl.col("timestamp")
-        .dt.replace_time_zone("UTC")
-        .dt.convert_time_zone("America/Denver")
         .dt.date()
         .cast(pl.String)
         .alias("date"),
@@ -78,8 +75,8 @@ def get_stock_prices_batches(
     years = range(start.year, end.year + 1)
     stock_prices_list = []
     for year in years:
-        year_start = max(dt.datetime(year, 1, 1, tzinfo=start.tzinfo), start)
-        year_end = min(dt.datetime(year, 12, 31, tzinfo=end.tzinfo), end)
+        year_start = max(dt.datetime(year, 1, 1, 0, 0, 0, tzinfo=TIME_ZONE), start)
+        year_end = min(dt.datetime(year, 12, 31, 23, 59, 59, tzinfo=TIME_ZONE), end)
 
         stock_prices = get_stock_prices(tickers, year_start, year_end)
 
@@ -121,8 +118,8 @@ def upload_and_merge_stock_prices_df(stock_prices_df: pl.DataFrame):
 
 @flow
 def stock_prices_backfill_flow():
-    start = dt.datetime(2017, 1, 1, tzinfo=ZoneInfo("America/Denver"))
-    end = dt.datetime.today().replace(tzinfo=ZoneInfo("America/Denver")) - dt.timedelta(
+    start = dt.datetime(2017, 1, 1, tzinfo=TIME_ZONE)
+    end = dt.datetime.today().replace(tzinfo=TIME_ZONE) - dt.timedelta(
         days=1
     )
 
@@ -142,11 +139,8 @@ def get_last_market_date() -> dt.date:
 def stock_prices_daily_flow():
     last_market_date = get_last_market_date()
     yesterday = (
-        dt.datetime.now(ZoneInfo("America/Denver")) - dt.timedelta(days=1)
+        dt.datetime.now(TIME_ZONE) - dt.timedelta(days=1)
     ).date()
-
-    print("Last Market Date:", last_market_date)
-    print("Yesterday:", yesterday)
 
     # Only get new data if yesterday was the last market date
     if last_market_date != yesterday:
@@ -156,13 +150,12 @@ def stock_prices_daily_flow():
         return
 
     start = dt.datetime.combine(yesterday, dt.time(0, 0, 0)).replace(
-        tzinfo=ZoneInfo("America/Denver")
+        tzinfo=TIME_ZONE
     )
     end = dt.datetime.combine(yesterday, dt.time(23, 59, 59)).replace(
-        tzinfo=ZoneInfo("America/Denver")
+        tzinfo=TIME_ZONE
     )
 
     tickers = get_tickers()
     stock_prices_df = get_stock_prices_batches(tickers, start, end)
-
     upload_and_merge_stock_prices_df(stock_prices_df)
