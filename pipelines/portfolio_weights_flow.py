@@ -1,5 +1,7 @@
 import datetime as dt
+import os
 import polars as pl
+import ray
 from utils import (
     get_covariance_matrix,
     get_optimal_weights_dynamic,
@@ -12,6 +14,50 @@ from utils import (
 from variables import TARGET_ACTIVE_RISK
 from clients import get_clickhouse_client
 from prefect import task, flow
+
+# Suppress Ray GPU warning for CPU-only usage
+os.environ["RAY_ACCEL_ENV_VAR_OVERRIDE_ON_ZERO"] = "0"
+
+
+@ray.remote
+def get_portfolio_weights_for_date_parallel(
+    date_: str,
+    alphas: pl.DataFrame,
+    benchmark_weights: pl.DataFrame,
+    factor_loadings: pl.DataFrame,
+    factor_covariances: pl.DataFrame,
+    idio_vol: pl.DataFrame,
+) -> tuple[pl.DataFrame, pl.DataFrame]:
+    alphas_slice = alphas.filter(pl.col("date").eq(date_)).sort("ticker")
+    benchmark_weights_slice = benchmark_weights.filter(pl.col("date").eq(date_)).sort(
+        "ticker"
+    )
+
+    factor_loadings_slice = factor_loadings.filter(pl.col("date").eq(date_)).sort(
+        "ticker"
+    )
+    factor_covariances_slice = factor_covariances.filter(pl.col("date").eq(date_)).sort(
+        "factor_1"
+    )
+    idio_vol_slice = idio_vol.filter(pl.col("date").eq(date_)).sort("ticker")
+
+    covariance_matrix = get_covariance_matrix(
+        factor_loadings_slice, factor_covariances_slice, idio_vol_slice
+    )
+
+    optimal_weights, lambda_, active_risk = get_optimal_weights_dynamic(
+        alphas=alphas_slice,
+        covariance_matrix=covariance_matrix,
+        benchmark_weights=benchmark_weights_slice,
+        target_active_risk=TARGET_ACTIVE_RISK,
+    )
+
+    weights_df = optimal_weights.with_columns(pl.lit(str(date_)).alias("date"))
+    metrics_df = pl.DataFrame(
+        {"lambda": [lambda_], "active_risk": [active_risk], "date": [str(date_)]}
+    )
+
+    return weights_df, metrics_df
 
 
 @task
@@ -44,37 +90,44 @@ def get_portfolio_weights_history(
     factor_covariances: pl.DataFrame,
     idio_vol: pl.DataFrame,
 ) -> tuple[pl.DataFrame]:
+    ray.init(
+        dashboard_host="0.0.0.0",
+        dashboard_port=8265,
+        ignore_reinit_error=True,
+        num_cpus=os.cpu_count(),
+    )
+
     dates = alphas["date"].unique().sort().to_list()
 
-    weights_list = []
-    metrics_list = []
-    for date_ in dates:
-        alphas_slice = alphas.filter(pl.col("date").eq(date_)).sort("ticker")
-        benchmark_weights_slice = benchmark_weights.filter(
-            pl.col("date").eq(date_)
-        ).sort("ticker")
+    # Put DataFrames in Ray's object store once to avoid repeated serialization
+    alphas_ref = ray.put(alphas)
+    benchmark_weights_ref = ray.put(benchmark_weights)
+    factor_loadings_ref = ray.put(factor_loadings)
+    factor_covariances_ref = ray.put(factor_covariances)
+    idio_vol_ref = ray.put(idio_vol)
 
-        factor_loadings_slice = factor_loadings.filter(pl.col("date").eq(date_)).sort(
-            "ticker"
+    # Create futures for parallel processing
+    futures = [
+        get_portfolio_weights_for_date_parallel.remote(
+            date_,
+            alphas_ref,
+            benchmark_weights_ref,
+            factor_loadings_ref,
+            factor_covariances_ref,
+            idio_vol_ref,
         )
-        factor_covariances_slice = factor_covariances.filter(
-            pl.col("date").eq(date_)
-        ).sort("factor_1")
-        idio_vol_slice = idio_vol.filter(pl.col("date").eq(date_)).sort("ticker")
+        for date_ in dates
+    ]
 
-        covariance_matrix = get_covariance_matrix(
-            factor_loadings_slice, factor_covariances_slice, idio_vol_slice
-        )
+    # Get results
+    results = ray.get(futures)
 
-        weights_df, metrics_df = get_portfolio_weights(
-            date_, alphas_slice, covariance_matrix, benchmark_weights_slice
-        )
+    # Unpack results
+    weights_list = [r[0] for r in results]
+    metrics_list = [r[1] for r in results]
 
-        weights_list.append(weights_df)
-        metrics_list.append(metrics_df)
-
-    metrics_df = pl.concat(metrics_list)
     weights_df = pl.concat(weights_list)
+    metrics_df = pl.concat(metrics_list)
 
     return weights_df, metrics_df
 
