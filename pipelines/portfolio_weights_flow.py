@@ -11,8 +11,10 @@ from utils import (
 )
 from variables import TARGET_ACTIVE_RISK
 from clients import get_clickhouse_client
+from prefect import task, flow
 
 
+@task
 def get_portfolio_weights(
     date_: dt.date,
     alphas: pl.DataFrame,
@@ -34,6 +36,7 @@ def get_portfolio_weights(
     return weights_df, metrics_df
 
 
+@task
 def get_portfolio_weights_history(
     alphas: pl.DataFrame,
     benchmark_weights: pl.DataFrame,
@@ -76,6 +79,7 @@ def get_portfolio_weights_history(
     return weights_df, metrics_df
 
 
+@task
 def upload_and_merge_portfolio_weights(portfolio_weights: pl.DataFrame):
     clickhouse_client = get_clickhouse_client()
     table_name = "portfolio_weights"
@@ -100,6 +104,7 @@ def upload_and_merge_portfolio_weights(portfolio_weights: pl.DataFrame):
     clickhouse_client.command(f"OPTIMIZE TABLE {table_name} FINAL")
 
 
+@task
 def upload_and_merge_portfolio_metrics(portfolio_metrics: pl.DataFrame):
     clickhouse_client = get_clickhouse_client()
     table_name = "portfolio_metrics"
@@ -124,6 +129,7 @@ def upload_and_merge_portfolio_metrics(portfolio_metrics: pl.DataFrame):
     clickhouse_client.command(f"OPTIMIZE TABLE {table_name} FINAL")
 
 
+@flow
 def portfolio_weights_backfill_flow():
     start = dt.date(2022, 7, 29)
     end = dt.date.today() - dt.timedelta(days=1)
@@ -142,6 +148,7 @@ def portfolio_weights_backfill_flow():
     upload_and_merge_portfolio_metrics(portfolio_metrics)
 
 
+@flow
 def portfolio_weights_daily_flow():
     yesterday = dt.date.today() - dt.timedelta(days=1)
 
