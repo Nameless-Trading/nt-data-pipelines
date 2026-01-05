@@ -134,9 +134,4 @@ def trading_daily_flow():
     current_notionals = get_current_notionals()
     notional_deltas = get_notional_deltas(target_notionals, current_notionals)
 
-    print(notional_deltas)
-    # place_all_orders(notional_deltas)
-
-
-# if __name__ == "__main__":
-#     trading_daily_flow()
+    place_all_orders(notional_deltas)
