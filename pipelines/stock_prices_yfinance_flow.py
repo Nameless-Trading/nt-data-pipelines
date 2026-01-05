@@ -112,8 +112,6 @@ def get_stock_prices_yfinance_batches(
                 "low": pl.Float64,
                 "close": pl.Float64,
                 "volume": pl.Float64,
-                "trade_count": pl.Float64,
-                "vwap": pl.Float64,
             }
         )
 
