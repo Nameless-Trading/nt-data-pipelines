@@ -1,12 +1,21 @@
 from clients import get_clickhouse_client
 import datetime as dt
-import pandas as pd
 import polars as pl
 from prefect import flow, task, get_run_logger
-from pipelines.stock_prices_flow import get_tickers
 from variables import TIME_ZONE
 import yfinance as yf
 from utils import get_last_market_date
+
+
+@task
+def get_tickers() -> list[str]:
+    clickhouse_client = get_clickhouse_client()
+
+    universe_arrow = clickhouse_client.query_arrow(
+        f"SELECT DISTINCT ticker FROM universe"
+    )
+
+    return pl.from_arrow(universe_arrow)["ticker"].sort().to_list()
 
 
 @task
