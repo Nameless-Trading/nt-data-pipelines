@@ -1,11 +1,12 @@
 from utils import get_portfolio_weights
 import datetime as dt
 import polars as pl
-from clients import get_alpaca_trading_client, get_clickhouse_client
-from alpaca.trading import MarketOrderRequest
-from alpaca.trading.enums import OrderSide, TimeInForce
+from clients import get_alpaca_trading_client
+from alpaca.trading import MarketOrderRequest, GetOrdersRequest
+from alpaca.trading.enums import OrderSide, TimeInForce, QueryOrderStatus
 from prefect import task, flow
-from utils import get_last_market_date
+from rich import print
+import pandas_market_calendars as mcal
 
 
 @task
@@ -16,14 +17,66 @@ def get_account_value():
 
 
 @task
-def get_notionals(weights: pl.DataFrame, account_value: float) -> pl.DataFrame:
+def get_target_notionals(weights: pl.DataFrame, account_value: float) -> pl.DataFrame:
+    return weights.select(
+        "ticker",
+        pl.col("weight").mul(pl.lit(account_value)).round(2).alias("target_notional"),
+    ).sort("target_notional", descending=True)
+
+
+@task
+def get_current_notionals() -> pl.DataFrame:
+    alpaca_client = get_alpaca_trading_client()
+
+    positions_raw = alpaca_client.get_all_positions()
+
+    positions_clean = pl.DataFrame(
+        {"ticker": position.symbol, "current_notional": float(position.market_value)}
+        for position in positions_raw
+    ).sort("current_notional", descending=True)
+
+    return positions_clean
+
+
+@task
+def get_notional_deltas(
+    target_notionals: pl.DataFrame, current_notionals: pl.DataFrame
+) -> pl.DataFrame:
     return (
-        weights.select(
-            "ticker", pl.col("weight").mul(pl.lit(account_value)).round(2).alias("notional")
+        target_notionals.join(other=current_notionals, on="ticker", how="full")
+        .select(
+            pl.max_horizontal("ticker", "ticker_right").alias("ticker"),
+            pl.col("target_notional").fill_null(0),
+            pl.col("current_notional").fill_null(0),
         )
-        .filter(pl.col("notional").ge(1))
-        .sort("notional", descending=True)
+        .select(
+            "ticker",
+            pl.col("target_notional")
+            .sub(pl.col("current_notional"))
+            .round(2)
+            .alias("notional_delta"),
+        )
+        .filter(pl.col("notional_delta").abs().ge(1))
+        .sort("notional_delta", descending=True)
     )
+
+
+@task
+def get_open_orders() -> pl.DataFrame:
+    alpaca_client = get_alpaca_trading_client()
+
+    filter = GetOrdersRequest(status=QueryOrderStatus.OPEN)
+
+    orders_raw = alpaca_client.get_orders(filter)
+
+    return orders_raw
+
+
+@task
+def cancel_all_orders():
+    alpaca_client = get_alpaca_trading_client()
+
+    alpaca_client.cancel_orders()
 
 
 @task
@@ -33,7 +86,7 @@ def place_order(ticker: str, notional_delta: float):
     side = OrderSide.SELL if notional_delta < 0 else OrderSide.BUY
     notional = abs(notional_delta)
 
-    print(f"Executing {side} @ {notional} for {ticker}")
+    print(f"Executing {side} @ MKT {notional} of {ticker}")
     order_data = MarketOrderRequest(
         symbol=ticker, notional=notional, side=side, time_in_force=TimeInForce.DAY
     )
@@ -47,15 +100,43 @@ def place_all_orders(notional_deltas: pl.DataFrame):
         place_order(ticker, notional_delta)
 
 
+@task
+def get_last_trading_date() -> dt.date:
+    nyse = mcal.get_calendar("NYSE")
+    today = dt.datetime.now().date()
+
+    # Look back 10 days to ensure we catch the last trading day
+    schedule = nyse.schedule(start_date=today - dt.timedelta(days=10), end_date=today)
+
+    # Filter out today and get the last trading day
+    valid_dates = schedule.index[schedule.index.date < today]
+
+    return valid_dates[-1].date() if len(valid_dates) > 0 else None
+
+
 @flow
 def trading_daily_flow():
-    last_market_date = get_last_market_date()
+    last_trading_date = get_last_trading_date()
+
+    weights = get_portfolio_weights(last_trading_date, last_trading_date)
+
+    if not len(weights) > 0:
+        raise RuntimeError("Portfolio weights appear to not be empty!")
+
+    open_orders = get_open_orders()
+
+    if len(open_orders) > 0:
+        cancel_all_orders()
 
     account_value = get_account_value()
-    weights = get_portfolio_weights(last_market_date, last_market_date)
-    notionals = get_notionals(weights, account_value)
-    print(notionals)
-    # TODO: Compute notional deltas
-    # TODO: Filter out notional deltas < $1
 
-    place_all_orders(notionals)
+    target_notionals = get_target_notionals(weights, account_value)
+    current_notionals = get_current_notionals()
+    notional_deltas = get_notional_deltas(target_notionals, current_notionals)
+
+    print(notional_deltas)
+    # place_all_orders(notional_deltas)
+
+
+# if __name__ == "__main__":
+#     trading_daily_flow()
