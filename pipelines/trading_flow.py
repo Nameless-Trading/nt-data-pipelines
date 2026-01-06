@@ -2,7 +2,7 @@ from utils import get_portfolio_weights
 import datetime as dt
 import polars as pl
 from clients import get_alpaca_trading_client
-from alpaca.trading import MarketOrderRequest, GetOrdersRequest
+from alpaca.trading import MarketOrderRequest, GetOrdersRequest, ClosePositionRequest
 from alpaca.trading.enums import OrderSide, TimeInForce, QueryOrderStatus
 from prefect import task, flow
 from rich import print
@@ -40,7 +40,9 @@ def get_current_notionals() -> pl.DataFrame:
 
 @task
 def get_notional_deltas(
-    target_notionals: pl.DataFrame, current_notionals: pl.DataFrame
+    target_notionals: pl.DataFrame,
+    current_notionals: pl.DataFrame,
+    positions_to_close: list[str],
 ) -> pl.DataFrame:
     return (
         target_notionals.join(other=current_notionals, on="ticker", how="full")
@@ -56,8 +58,25 @@ def get_notional_deltas(
             .round(2)
             .alias("notional_delta"),
         )
-        .filter(pl.col("notional_delta").abs().ge(1))
+        .filter(
+            pl.col("notional_delta").abs().ge(1),
+            pl.col("ticker").is_in(positions_to_close).not_(),
+        )
         .sort("notional_delta", descending=True)
+    )
+
+
+def get_positions_to_close(
+    target_notionals: pl.DataFrame, current_notionals: pl.DataFrame
+) -> list[str]:
+    return (
+        target_notionals.filter(
+            pl.col("target_notional").eq(0),
+            pl.col("ticker").is_in(current_notionals["ticker"].to_list()),
+        )["ticker"]
+        .unique()
+        .sort()
+        .to_list()
     )
 
 
@@ -95,6 +114,16 @@ def place_order(ticker: str, notional_delta: float):
 
 
 @task
+def close_positions(positions_to_close: list[str]):
+    for ticker in positions_to_close:
+        alpaca_client = get_alpaca_trading_client()
+
+        alpaca_client.close_position(
+            symbol_or_asset_id=ticker,
+        )
+
+
+@task
 def place_all_orders(notional_deltas: pl.DataFrame):
     for ticker, notional_delta in notional_deltas.iter_rows():
         place_order(ticker, notional_delta)
@@ -117,7 +146,6 @@ def get_last_trading_date() -> dt.date:
 @flow
 def trading_daily_flow():
     last_trading_date = get_last_trading_date()
-
     weights = get_portfolio_weights(last_trading_date, last_trading_date)
 
     if not len(weights) > 0:
@@ -129,9 +157,15 @@ def trading_daily_flow():
         cancel_all_orders()
 
     account_value = get_account_value()
+    current_notionals = get_current_notionals()
 
     target_notionals = get_target_notionals(weights, account_value)
-    current_notionals = get_current_notionals()
-    notional_deltas = get_notional_deltas(target_notionals, current_notionals)
 
+    positions_to_close = get_positions_to_close(target_notionals, current_notionals)
+
+    notional_deltas = get_notional_deltas(
+        target_notionals, current_notionals, positions_to_close
+    )
+
+    close_positions(positions_to_close)
     place_all_orders(notional_deltas)
