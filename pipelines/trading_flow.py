@@ -5,7 +5,6 @@ from clients import get_alpaca_trading_client
 from alpaca.trading import MarketOrderRequest, GetOrdersRequest, ClosePositionRequest
 from alpaca.trading.enums import OrderSide, TimeInForce, QueryOrderStatus
 from prefect import task, flow
-from rich import print
 import pandas_market_calendars as mcal
 
 

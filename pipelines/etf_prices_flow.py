@@ -1,14 +1,12 @@
-from clients import get_alpaca_historical_stock_data_client, get_clickhouse_client
+from clients import get_alpaca_historical_stock_data_client, get_bear_lake_client
 from alpaca.data.requests import StockBarsRequest
 from alpaca.data.enums import Adjustment, DataFeed
 from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
 import datetime as dt
 import polars as pl
 from prefect import flow, task
-from variables import TIME_ZONE
+from variables import TIME_ZONE, FACTORS
 from utils import get_last_market_date
-
-TICKERS = ["MTUM", "QUAL", "USMV", "VLUE", "SPY"]
 
 
 @task
@@ -32,7 +30,7 @@ def get_etf_prices(
         return pl.DataFrame(
             schema={
                 "ticker": pl.String,
-                "date": pl.String,
+                "date": pl.Date,
                 "open": pl.Float64,
                 "high": pl.Float64,
                 "low": pl.Float64,
@@ -45,7 +43,7 @@ def get_etf_prices(
 
     stock_prices_clean = pl.from_pandas(stock_prices_raw.df.reset_index()).select(
         pl.col("symbol").alias("ticker"),
-        pl.col("timestamp").dt.date().cast(pl.String).alias("date"),
+        pl.col("timestamp").dt.date().alias("date"),
         "open",
         "high",
         "low",
@@ -72,38 +70,42 @@ def get_etf_prices_batches(
 
         etf_prices_list.append(etf_prices)
 
-    return pl.concat(etf_prices_list).sort("date", "ticker")
+    return (
+        pl.concat(etf_prices_list)
+        .with_columns(pl.col("date").dt.year().alias("year"))
+        .sort("date", "ticker")
+    )
 
 
 @task
 def upload_and_merge_etf_prices_df(stock_prices_df: pl.DataFrame):
-    clickhouse_client = get_clickhouse_client()
+    bear_lake_client = get_bear_lake_client()
     table_name = "etf_prices"
 
     # Create table if not exists
-    clickhouse_client.command(
-        f"""
-        CREATE TABLE IF NOT EXISTS {table_name} (
-            ticker String,
-            date String,
-            open Float64,
-            high Float64,
-            low Float64,
-            close Float64,
-            volume Float64,
-            trade_count Float64,
-            vwap Float64
-        )
-        ENGINE = ReplacingMergeTree()
-        ORDER BY (ticker, date)
-        """
+    bear_lake_client.create(
+        name=table_name,
+        schema={
+            "ticker": pl.String,
+            "date": pl.Date,
+            "open": pl.Float64,
+            "high": pl.Float64,
+            "low": pl.Float64,
+            "close": pl.Float64,
+            "volume": pl.Float64,
+            "trade_count": pl.Float64,
+            "vwap": pl.Float64,
+        },
+        partition_keys=["year"],
+        primary_keys=["date", "ticker"],
+        mode="skip",
     )
 
     # Insert into table
-    clickhouse_client.insert_df_arrow(table_name, stock_prices_df)
+    bear_lake_client.insert(name=table_name, data=stock_prices_df, mode="append")
 
     # Optimize table (deduplicate)
-    clickhouse_client.command(f"OPTIMIZE TABLE {table_name} FINAL")
+    bear_lake_client.optimize(name=table_name)
 
 
 @flow
@@ -111,7 +113,7 @@ def etf_prices_backfill_flow():
     start = dt.datetime(2017, 1, 1, tzinfo=TIME_ZONE)
     end = dt.datetime.today().replace(tzinfo=TIME_ZONE) - dt.timedelta(days=1)
 
-    etf_prices_df = get_etf_prices_batches(TICKERS, start, end)
+    etf_prices_df = get_etf_prices_batches(FACTORS, start, end)
     upload_and_merge_etf_prices_df(etf_prices_df)
 
 
@@ -130,6 +132,6 @@ def etf_prices_daily_flow():
     start = dt.datetime.combine(yesterday, dt.time(0, 0, 0)).replace(tzinfo=TIME_ZONE)
     end = dt.datetime.combine(yesterday, dt.time(23, 59, 59)).replace(tzinfo=TIME_ZONE)
 
-    stock_prices_df = get_etf_prices_batches(TICKERS, start, end)
+    stock_prices_df = get_etf_prices_batches(FACTORS, start, end)
 
     upload_and_merge_etf_prices_df(stock_prices_df)

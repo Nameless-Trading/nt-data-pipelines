@@ -1,143 +1,141 @@
 import datetime as dt
 import polars as pl
-from clients import get_clickhouse_client
+from clients import get_bear_lake_client
+import bear_lake as bl
+from prefect import task
 
 
+@task
+def get_universe(start: dt.date, end: dt.date) -> pl.DataFrame:
+    bear_lake_client = get_bear_lake_client()
+    return bear_lake_client.query(
+        bl.table("universe")
+        .filter(pl.col("date").is_between(start, end))
+        .select("date", "ticker")
+        .sort("ticker", "date")
+    )
+
+
+@task
+def get_universe_returns(start: dt.date, end: dt.date) -> pl.DataFrame:
+    bear_lake_client = get_bear_lake_client()
+    return bear_lake_client.query(
+        bl.table("universe")
+        .join(other=bl.table("stock_returns"), on=["date", "ticker"], how="left")
+        .filter(pl.col("date").is_between(start, end))
+        .select("date", "ticker", "return")
+        .sort("ticker", "date")
+    )
+
+
+@task
+def get_stock_returns(start: dt.date, end: dt.date) -> pl.DataFrame:
+    bear_lake_client = get_bear_lake_client()
+    return bear_lake_client.query(
+        bl.table("stock_returns")
+        .filter(pl.col("date").is_between(start, end))
+        .select("date", "ticker", "return")
+        .sort("ticker", "date")
+    )
+
+
+@task
+def get_etf_returns(start: dt.date, end: dt.date) -> pl.DataFrame:
+    bear_lake_client = get_bear_lake_client()
+    return bear_lake_client.query(
+        bl.table("etf_returns")
+        .filter(pl.col("date").is_between(start, end))
+        .select("date", "ticker", "return")
+        .sort("ticker", "date")
+    )
+
+
+@task
 def get_alphas(start: dt.date, end: dt.date) -> pl.DataFrame:
-    clickhouse_client = get_clickhouse_client()
-
-    data_arrow = clickhouse_client.query_arrow(
-        f"""
-        SELECT 
-            u.date,
-            u.ticker,
-            a.alpha
-        FROM universe u
-        INNER JOIN alphas a ON u.date = a.date AND u.ticker = a.ticker
-        WHERE u.date BETWEEN '{start}' AND '{end}'
-        """
-    )
-
-    return pl.from_arrow(data_arrow).with_columns(
-        pl.col("date").str.strptime(pl.Date, "%Y-%m-%d")
+    bear_lake_client = get_bear_lake_client()
+    return bear_lake_client.query(
+        bl.table("universe")
+        .join(other=bl.table("alphas"), on=["date", "ticker"], how="left")
+        .filter(pl.col("date").is_between(start, end), pl.col("alpha").is_not_null())
+        .select("date", "ticker", "alpha")
+        .sort("ticker", "date")
     )
 
 
+@task
 def get_benchmark_weights(start: dt.date, end: dt.date) -> pl.DataFrame:
-    clickhouse_client = get_clickhouse_client()
-
-    data_arrow = clickhouse_client.query_arrow(
-        f"""
-        SELECT 
-            u.date,
-            u.ticker,
-            b.weight
-        FROM universe u
-        INNER JOIN benchmark_weights b ON u.date = b.date AND u.ticker = b.ticker
-        WHERE u.date BETWEEN '{start}' AND '{end}'
-        """
-    )
-
-    return pl.from_arrow(data_arrow).with_columns(
-        pl.col("date").str.strptime(pl.Date, "%Y-%m-%d")
+    bear_lake_client = get_bear_lake_client()
+    return bear_lake_client.query(
+        bl.table("universe")
+        .join(other=bl.table("benchmark_weights"), on=["date", "ticker"], how="left")
+        .filter(pl.col("date").is_between(start, end))
+        .select("date", "ticker", "weight")
+        .sort("ticker", "date")
     )
 
 
+@task
+def get_benchmark_returns(start: dt.date, end: dt.date) -> pl.DataFrame:
+    bear_lake_client = get_bear_lake_client()
+
+    return bear_lake_client.query(
+        bl.table("benchmark_returns").filter(pl.col("date").is_between(start, end))
+    )
+
+
+@task
 def get_factor_loadings(start: dt.date, end: dt.date) -> pl.DataFrame:
-    clickhouse_client = get_clickhouse_client()
-
-    data_arrow = clickhouse_client.query_arrow(
-        f"""
-        SELECT 
-            u.date,
-            u.ticker,
-            f.factor,
-            f.loading
-        FROM universe u
-        INNER JOIN factor_loadings f ON u.date = f.date AND u.ticker = f.ticker
-        WHERE u.date BETWEEN '{start}' AND '{end}'
-        """
-    )
-
-    return pl.from_arrow(data_arrow).with_columns(
-        pl.col("date").str.strptime(pl.Date, "%Y-%m-%d")
+    bear_lake_client = get_bear_lake_client()
+    return bear_lake_client.query(
+        bl.table("universe")
+        .join(other=bl.table("factor_loadings"), on=["date", "ticker"], how="left")
+        .filter(pl.col("date").is_between(start, end), pl.col("loading").is_not_null())
+        .select("date", "ticker", "factor", "loading")
+        .sort("ticker", "date")
     )
 
 
+@task
 def get_factor_covariances(start: dt.date, end: dt.date) -> pl.DataFrame:
-    clickhouse_client = get_clickhouse_client()
-
-    data_arrow = clickhouse_client.query_arrow(
-        f"""
-        SELECT 
-            date,
-            factor_1,
-            factor_2,
-            covariance
-        FROM factor_covariances
-        WHERE date BETWEEN '{start}' AND '{end}'
-        """
-    )
-
-    return pl.from_arrow(data_arrow).with_columns(
-        pl.col("date").str.strptime(pl.Date, "%Y-%m-%d")
+    bear_lake_client = get_bear_lake_client()
+    return bear_lake_client.query(
+        bl.table("factor_covariances")
+        .filter(pl.col("date").is_between(start, end))
+        .select("date", "factor_1", "factor_2", "covariance")
+        .sort("date")
     )
 
 
+@task
 def get_idio_vol(start: dt.date, end: dt.date) -> pl.DataFrame:
-    clickhouse_client = get_clickhouse_client()
-
-    data_arrow = clickhouse_client.query_arrow(
-        f"""
-        SELECT 
-            u.date,
-            u.ticker,
-            i.idio_vol
-        FROM universe u
-        INNER JOIN idio_vol i ON u.date = i.date AND u.ticker = i.ticker
-        WHERE u.date BETWEEN '{start}' AND '{end}'
-        """
-    )
-
-    return pl.from_arrow(data_arrow).with_columns(
-        pl.col("date").str.strptime(pl.Date, "%Y-%m-%d")
+    bear_lake_client = get_bear_lake_client()
+    return bear_lake_client.query(
+        bl.table("universe")
+        .join(other=bl.table("idio_vol"), on=["date", "ticker"], how="left")
+        .filter(pl.col("date").is_between(start, end), pl.col("idio_vol").is_not_null())
+        .select("date", "ticker", "idio_vol")
+        .sort("ticker", "date")
     )
 
 
+@task
 def get_portfolio_weights(start: dt.date, end: dt.date) -> pl.DataFrame:
-    clickhouse_client = get_clickhouse_client()
-
-    data_arrow = clickhouse_client.query_arrow(
-        f"""
-        SELECT 
-            date,
-            ticker,
-            weight
-        FROM portfolio_weights
-        WHERE date BETWEEN '{start}' AND '{end}'
-        """
-    )
-
-    return pl.from_arrow(data_arrow).with_columns(
-        pl.col("date").str.strptime(pl.Date, "%Y-%m-%d")
+    bear_lake_client = get_bear_lake_client()
+    return bear_lake_client.query(
+        bl.table("portfolio_weights")
+        .filter(pl.col("date").is_between(start, end))
+        .select("date", "ticker", "weight")
+        .sort("ticker", "date")
     )
 
 
+@task
 def get_prices(start: dt.date, end: dt.date) -> pl.DataFrame:
-    clickhouse_client = get_clickhouse_client()
-
-    data_arrow = clickhouse_client.query_arrow(
-        f"""
-        SELECT
-            u.date,
-            u.ticker,
-            p.close
-        FROM universe u
-        INNER JOIN stock_prices p ON u.date = p.date AND u.ticker = p.ticker
-        WHERE u.date BETWEEN '{start}' AND '{end}'
-        """
-    )
-
-    return pl.from_arrow(data_arrow).with_columns(
-        pl.col("date").str.strptime(pl.Date, "%Y-%m-%d")
+    bear_lake_client = get_bear_lake_client()
+    return bear_lake_client.query(
+        bl.table("universe")
+        .join(other=bl.table("stock_prices"), on=["date", "ticker"], how="left")
+        .filter(pl.col("date").is_between(start, end))
+        .select("date", "ticker", "close")
+        .sort("ticker", "date")
     )

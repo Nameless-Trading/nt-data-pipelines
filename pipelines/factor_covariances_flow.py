@@ -1,24 +1,9 @@
 import polars as pl
 import datetime as dt
-from clients import get_clickhouse_client
+from clients import get_bear_lake_client
 from prefect import task, flow
-from variables import WINDOW, FACTORS
-from utils import get_trading_date_range
-
-
-@task
-def get_etf_returns(start: dt.date, end: dt.date) -> pl.DataFrame:
-    clickhouse_client = get_clickhouse_client()
-
-    etf_returns_arrow = clickhouse_client.query_arrow(
-        f"""SELECT * FROM etf_returns WHERE date BETWEEN '{start}' AND '{end}'"""
-    )
-
-    return (
-        pl.from_arrow(etf_returns_arrow)
-        .with_columns(pl.col("date").str.strptime(pl.Date, "%Y-%m-%d"))
-        .filter(pl.col("ticker").is_in(FACTORS))
-    )
+from variables import WINDOW
+from utils import get_trading_date_range, get_etf_returns
 
 
 @task
@@ -55,35 +40,36 @@ def clean_factor_covariances(factor_covariances: pl.DataFrame) -> pl.DataFrame:
         .sort("factor_1", "factor_2", "date")
         .with_columns(
             pl.col("covariance").ewm_mean(half_life=60).over("factor_1", "factor_2"),
-            pl.col("date").cast(pl.String),
+            pl.col("date").dt.year().alias("year"),
         )
     )
 
 
 @task
 def upload_and_merge_factor_covariances(factor_covariances: pl.DataFrame):
-    clickhouse_client = get_clickhouse_client()
+    bear_lake_client = get_bear_lake_client()
     table_name = "factor_covariances"
 
     # Create table if not exists
-    clickhouse_client.command(
-        f"""
-        CREATE TABLE IF NOT EXISTS {table_name} (
-            date String,
-            factor_1 String,
-            factor_2 String,
-            covariance Float64
-        )
-        ENGINE = ReplacingMergeTree()
-        ORDER BY (date, factor_1, factor_2)
-        """
+    bear_lake_client.create(
+        name=table_name,
+        schema={
+            "date": pl.Date,
+            "year": pl.Int32,
+            "factor_1": pl.String,
+            "factor_2": pl.String,
+            "covariance": pl.Float64,
+        },
+        partition_keys=["year"],
+        primary_keys=["date", "factor_1", "factor_2"],
+        mode="skip",
     )
 
-    # Insert into master table
-    clickhouse_client.insert_df_arrow(table_name, factor_covariances)
+    # Insert data
+    bear_lake_client.insert(name=table_name, data=factor_covariances, mode="append")
 
-    # Optimize table (deduplicate)
-    clickhouse_client.command(f"OPTIMIZE TABLE {table_name} FINAL")
+    # Optimize
+    bear_lake_client.optimize(name=table_name)
 
 
 @flow

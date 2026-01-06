@@ -6,6 +6,7 @@ readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
     "alpaca-py>=0.43.2",
+    "bear-lake>=0.1.5",
     "beautifulsoup4>=4.14.3",
     "clickhouse-connect>=0.10.0",
     "cvxpy>=1.7.5",

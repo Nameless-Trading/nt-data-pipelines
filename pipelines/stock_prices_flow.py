@@ -1,4 +1,4 @@
-from clients import get_alpaca_historical_stock_data_client, get_clickhouse_client
+from clients import get_alpaca_historical_stock_data_client, get_bear_lake_client
 from alpaca.data.requests import StockBarsRequest
 from alpaca.data.enums import Adjustment, DataFeed
 from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
@@ -7,17 +7,17 @@ import polars as pl
 from prefect import flow, task
 from variables import TIME_ZONE
 from utils import get_last_market_date
+import bear_lake as bl
 
 
 @task
 def get_tickers() -> list[str]:
-    clickhouse_client = get_clickhouse_client()
-
-    universe_arrow = clickhouse_client.query_arrow(
-        f"SELECT DISTINCT ticker FROM universe"
+    bear_lake_client = get_bear_lake_client()
+    return (
+        bear_lake_client.query(bl.table("universe").select("ticker").unique())["ticker"]
+        .sort()
+        .to_list()
     )
-
-    return pl.from_arrow(universe_arrow)["ticker"].sort().to_list()
 
 
 @task
@@ -41,7 +41,7 @@ def get_stock_prices(
         return pl.DataFrame(
             schema={
                 "ticker": pl.String,
-                "date": pl.String,
+                "date": pl.Date,
                 "open": pl.Float64,
                 "high": pl.Float64,
                 "low": pl.Float64,
@@ -54,7 +54,7 @@ def get_stock_prices(
 
     stock_prices_clean = pl.from_pandas(stock_prices_raw.df.reset_index()).select(
         pl.col("symbol").alias("ticker"),
-        pl.col("timestamp").dt.date().cast(pl.String).alias("date"),
+        pl.col("timestamp").dt.date().alias("date"),
         "open",
         "high",
         "low",
@@ -81,38 +81,42 @@ def get_stock_prices_batches(
 
         stock_prices_list.append(stock_prices)
 
-    return pl.concat(stock_prices_list).sort("date", "ticker")
+    return (
+        pl.concat(stock_prices_list)
+        .with_columns(pl.col("date").dt.year().alias("year"))
+        .sort("date", "ticker")
+    )
 
 
 @task
 def upload_and_merge_stock_prices_df(stock_prices_df: pl.DataFrame):
-    clickhouse_client = get_clickhouse_client()
+    bear_lake_client = get_bear_lake_client()
     table_name = "stock_prices"
 
     # Create table if not exists
-    clickhouse_client.command(
-        f"""
-        CREATE TABLE IF NOT EXISTS {table_name} (
-            ticker String,
-            date String,
-            open Float64,
-            high Float64,
-            low Float64,
-            close Float64,
-            volume Float64,
-            trade_count Float64,
-            vwap Float64
-        )
-        ENGINE = ReplacingMergeTree()
-        ORDER BY (ticker, date)
-        """
+    bear_lake_client.create(
+        name=table_name,
+        schema={
+            "ticker": pl.String,
+            "date": pl.Date,
+            "open": pl.Float64,
+            "high": pl.Float64,
+            "low": pl.Float64,
+            "close": pl.Float64,
+            "volume": pl.Float64,
+            "trade_count": pl.Float64,
+            "vwap": pl.Float64,
+        },
+        partition_keys=["year"],
+        primary_keys=["date", "ticker"],
+        mode="skip",
     )
 
     # Insert into table
-    clickhouse_client.insert_df_arrow(table_name, stock_prices_df)
+    bear_lake_client.insert(name=table_name, data=stock_prices_df, mode="append")
 
     # Optimize table (deduplicate)
-    clickhouse_client.command(f"OPTIMIZE TABLE {table_name} FINAL")
+    bear_lake_client.optimize(name=table_name)
 
 
 @flow

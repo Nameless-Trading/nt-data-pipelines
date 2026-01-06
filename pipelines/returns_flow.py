@@ -1,59 +1,81 @@
-from clients import get_clickhouse_client
+from clients import get_bear_lake_client
 from prefect import task, flow
+import bear_lake as bl
+import polars as pl
 
 
 @task
 def materialize_stock_returns():
-    clickhouse_client = get_clickhouse_client()
-    clickhouse_client.command(
-        """
-        CREATE OR REPLACE TABLE stock_returns
-        ENGINE = MergeTree()
-        ORDER BY (ticker, date)
-        AS
-        WITH transform AS (
-            SELECT
-                ticker,
-                date,
-                close,
-                lag(close, 1, close) OVER (PARTITION BY ticker ORDER BY date) AS previous_day_close,
-                close / previous_day_close - 1 AS return
-            FROM stock_prices
+    bear_lake_client = get_bear_lake_client()
+    table_name = "stock_returns"
+
+    # Get stock returns
+    stock_returns = bear_lake_client.query(
+        bl.table("stock_prices")
+        .sort("ticker", "date")
+        .select(
+            "ticker",
+            "date",
+            pl.col("date").dt.year().alias("year"),
+            pl.col("close").pct_change().over("ticker").alias("return"),
         )
-        SELECT
-            ticker,
-            date,
-            return
-        FROM transform;
-        """
+        .drop_nulls()
+        .sort("ticker", "date")
     )
+
+    # Create or replace table
+    bear_lake_client.create(
+        name=table_name,
+        schema={
+            "ticker": pl.String,
+            "date": pl.Date,
+            "year": pl.Int32,
+            "return": pl.Float64,
+        },
+        partition_keys=["year"],
+        primary_keys=["ticker", "date"],
+        mode="replace",
+    )
+
+    # Insert data
+    bear_lake_client.insert(name=table_name, data=stock_returns, mode="append")
 
 
 @task
 def materialize_etf_returns():
-    clickhouse_client = get_clickhouse_client()
-    clickhouse_client.command(
-        """
-        CREATE OR REPLACE TABLE etf_returns
-        ENGINE = MergeTree()
-        ORDER BY (ticker, date)
-        AS
-        WITH transform AS (
-            SELECT
-                ticker,
-                date,
-                close,
-                lag(close, 1, close) OVER (PARTITION BY ticker ORDER BY date) AS previous_day_close,
-                close / previous_day_close - 1 AS return
-            FROM etf_prices
+    bear_lake_client = get_bear_lake_client()
+    table_name = "etf_returns"
+
+    # Get stock returns
+    stock_returns = bear_lake_client.query(
+        bl.table("etf_prices")
+        .sort("ticker", "date")
+        .select(
+            "ticker",
+            "date",
+            pl.col("date").dt.year().alias("year"),
+            pl.col("close").pct_change().over("ticker").alias("return"),
         )
-        SELECT
-            ticker,
-            date,
-            return
-        FROM transform;
-        """
+        .drop_nulls()
+        .sort("ticker", "date")
     )
+
+    # Create or replace table
+    bear_lake_client.create(
+        name=table_name,
+        schema={
+            "ticker": pl.String,
+            "date": pl.Date,
+            "year": pl.Int32,
+            "return": pl.Float64,
+        },
+        partition_keys=["year"],
+        primary_keys=["ticker", "date"],
+        mode="replace",
+    )
+
+    # Insert data
+    bear_lake_client.insert(name=table_name, data=stock_returns, mode="append")
 
 
 @flow

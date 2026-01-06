@@ -12,7 +12,7 @@ from utils import (
     get_factor_loadings,
 )
 from variables import TARGET_ACTIVE_RISK
-from clients import get_clickhouse_client
+from clients import get_bear_lake_client
 from prefect import task, flow
 from utils import get_last_market_date
 
@@ -30,6 +30,8 @@ def get_portfolio_weights_for_date_parallel(
     idio_vol: pl.DataFrame,
 ) -> tuple[pl.DataFrame, pl.DataFrame]:
     alphas_slice = alphas.filter(pl.col("date").eq(date_)).sort("ticker")
+    tickers = alphas_slice["ticker"].unique().sort().to_list()
+
     benchmark_weights_slice = benchmark_weights.filter(pl.col("date").eq(date_)).sort(
         "ticker"
     )
@@ -43,7 +45,10 @@ def get_portfolio_weights_for_date_parallel(
     idio_vol_slice = idio_vol.filter(pl.col("date").eq(date_)).sort("ticker")
 
     covariance_matrix = get_covariance_matrix(
-        factor_loadings_slice, factor_covariances_slice, idio_vol_slice
+        tickers=tickers,
+        factor_loadings=factor_loadings_slice,
+        factor_covariances=factor_covariances_slice,
+        idio_vol=idio_vol_slice,
     )
 
     optimal_weights, lambda_, active_risk = get_optimal_weights_dynamic(
@@ -53,7 +58,7 @@ def get_portfolio_weights_for_date_parallel(
         target_active_risk=TARGET_ACTIVE_RISK,
     )
 
-    weights_df = optimal_weights.with_columns(pl.lit(str(date_)).alias("date"))
+    weights_df = optimal_weights.with_columns(pl.lit(date_).alias("date"))
     metrics_df = pl.DataFrame(
         {"lambda": [lambda_], "active_risk": [active_risk], "date": [str(date_)]}
     )
@@ -62,20 +67,29 @@ def get_portfolio_weights_for_date_parallel(
 
 
 @task
-def get_portfolio_weights(
-    date_: dt.date,
+def get_portfolio_weights_for_date(
+    date_: str,
     alphas: pl.DataFrame,
-    covariance_matrix: pl.DataFrame,
     benchmark_weights: pl.DataFrame,
+    factor_loadings: pl.DataFrame,
+    factor_covariances: pl.DataFrame,
+    idio_vol: pl.DataFrame,
 ) -> pl.DataFrame:
+    tickers = alphas["ticker"].unique().sort().to_list()
+    covariance_matirx = get_covariance_matrix(
+        tickers, factor_loadings, factor_covariances, idio_vol
+    )
+
     optimal_weights, lambda_, active_risk = get_optimal_weights_dynamic(
         alphas=alphas,
-        covariance_matrix=covariance_matrix,
+        covariance_matrix=covariance_matirx,
         benchmark_weights=benchmark_weights,
         target_active_risk=TARGET_ACTIVE_RISK,
     )
 
-    weights_df = optimal_weights.with_columns(pl.lit(str(date_)).alias("date"))
+    weights_df = optimal_weights.with_columns(
+        pl.lit(date_).alias("date"), pl.lit(date_.year).alias("year")
+    )
     metrics_df = pl.DataFrame(
         {"lambda": [lambda_], "active_risk": [active_risk], "date": [str(date_)]}
     )
@@ -127,7 +141,9 @@ def get_portfolio_weights_history(
     weights_list = [r[0] for r in results]
     metrics_list = [r[1] for r in results]
 
-    weights_df = pl.concat(weights_list)
+    weights_df = pl.concat(weights_list).with_columns(
+        pl.col("date").dt.year().alias("year")
+    )
     metrics_df = pl.concat(metrics_list)
 
     return weights_df, metrics_df
@@ -135,52 +151,49 @@ def get_portfolio_weights_history(
 
 @task
 def upload_and_merge_portfolio_weights(portfolio_weights: pl.DataFrame):
-    clickhouse_client = get_clickhouse_client()
+    bear_lake_client = get_bear_lake_client()
     table_name = "portfolio_weights"
 
     # Create table if not exists
-    clickhouse_client.command(
-        f"""
-        CREATE TABLE IF NOT EXISTS {table_name} (
-            date String,
-            ticker String,
-            weight Float64
-        )
-        ENGINE = ReplacingMergeTree()
-        ORDER BY (ticker, date)
-        """
+    bear_lake_client.create(
+        name=table_name,
+        schema={
+            "ticker": pl.String,
+            "date": pl.Date,
+            "year": pl.Int32,
+            "weight": pl.Float64,
+        },
+        partition_keys=["year"],
+        primary_keys=["date", "ticker"],
+        mode="skip",
     )
 
     # Insert into table
-    clickhouse_client.insert_df_arrow(table_name, portfolio_weights)
+    bear_lake_client.insert(name=table_name, data=portfolio_weights, mode="append")
 
     # Optimize table (deduplicate)
-    clickhouse_client.command(f"OPTIMIZE TABLE {table_name} FINAL")
+    bear_lake_client.optimize(name=table_name)
 
 
 @task
 def upload_and_merge_portfolio_metrics(portfolio_metrics: pl.DataFrame):
-    clickhouse_client = get_clickhouse_client()
+    bear_lake_client = get_bear_lake_client()
     table_name = "portfolio_metrics"
 
     # Create table if not exists
-    clickhouse_client.command(
-        f"""
-        CREATE TABLE IF NOT EXISTS {table_name} (
-            date String,
-            lambda Float64,
-            active_risk Float64
-        )
-        ENGINE = ReplacingMergeTree()
-        ORDER BY (date)
-        """
+    bear_lake_client.create(
+        name=table_name,
+        schema={"date": pl.Date, "lambda": pl.Float64, "active_risk": pl.Float64},
+        partition_keys=None,
+        primary_keys=["date"],
+        mode="skip",
     )
 
     # Insert into table
-    clickhouse_client.insert_df_arrow(table_name, portfolio_metrics)
+    bear_lake_client.insert(name=table_name, data=portfolio_metrics, mode="append")
 
     # Optimize table (deduplicate)
-    clickhouse_client.command(f"OPTIMIZE TABLE {table_name} FINAL")
+    bear_lake_client.optimize(name=table_name)
 
 
 @flow
@@ -214,21 +227,19 @@ def portfolio_weights_daily_flow():
         print("Yesterday:", yesterday)
         return
 
-    alphas = get_alphas(yesterday, yesterday)
-    benchmark_weights = get_benchmark_weights(yesterday, yesterday)
-    factor_loadings = get_factor_loadings(yesterday, yesterday)
-    factor_covariances = get_factor_covariances(yesterday, yesterday)
-    idio_vol = get_idio_vol(yesterday, yesterday)
+    alphas = get_alphas(last_market_date, last_market_date)
+    benchmark_weights = get_benchmark_weights(last_market_date, last_market_date)
+    factor_loadings = get_factor_loadings(last_market_date, last_market_date)
+    factor_covariances = get_factor_covariances(last_market_date, last_market_date)
+    idio_vol = get_idio_vol(last_market_date, last_market_date)
 
-    covariance_matrix = get_covariance_matrix(
-        factor_loadings, factor_covariances, idio_vol
-    )
-
-    portfolio_weights, portfolio_metrics = get_portfolio_weights(
-        date_=yesterday,
+    portfolio_weights, portfolio_metrics = get_portfolio_weights_for_date(
+        date_=last_market_date,
         alphas=alphas,
-        covariance_matrix=covariance_matrix,
         benchmark_weights=benchmark_weights,
+        factor_loadings=factor_loadings,
+        factor_covariances=factor_covariances,
+        idio_vol=idio_vol,
     )
 
     upload_and_merge_portfolio_weights(portfolio_weights)

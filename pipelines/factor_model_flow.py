@@ -1,40 +1,12 @@
 import polars as pl
-from clients import get_clickhouse_client
+from clients import get_bear_lake_client
 import datetime as dt
 from statsmodels.regression.rolling import RollingOLS
 import statsmodels.api as sm
 from tqdm import tqdm
 from prefect import task, flow
 from variables import WINDOW, FACTORS, DISABLE_TQDM
-from utils import get_trading_date_range
-
-
-@task
-def get_stock_returns(start: dt.date, end: dt.date) -> pl.DataFrame:
-    clickhouse_client = get_clickhouse_client()
-
-    stock_returns_arrow = clickhouse_client.query_arrow(
-        f"""SELECT * FROM stock_returns WHERE date BETWEEN '{start}' AND '{end}'"""
-    )
-
-    return pl.from_arrow(stock_returns_arrow).with_columns(
-        pl.col("date").str.strptime(pl.Date, "%Y-%m-%d")
-    )
-
-
-@task
-def get_etf_returns(start: dt.date, end: dt.date) -> pl.DataFrame:
-    clickhouse_client = get_clickhouse_client()
-
-    etf_returns_arrow = clickhouse_client.query_arrow(
-        f"""SELECT * FROM etf_returns WHERE date BETWEEN '{start}' AND '{end}'"""
-    )
-
-    return (
-        pl.from_arrow(etf_returns_arrow)
-        .with_columns(pl.col("date").str.strptime(pl.Date, "%Y-%m-%d"))
-        .filter(pl.col("ticker").is_in(FACTORS))
-    )
+from utils import get_trading_date_range, get_stock_returns, get_etf_returns
 
 
 @task
@@ -54,6 +26,16 @@ def estimate_regression(
         ticker_df = df.filter(pl.col("ticker") == ticker).sort("date")
 
         if len(ticker_df) < WINDOW:
+            result = pl.DataFrame(
+                {
+                    "ticker": ticker,
+                    "date": ticker_df["date"],
+                    "return": ticker_df["return"],
+                    "alpha": None,
+                }
+                | {factor: ticker_df[factor] for factor in FACTORS}
+                | {f"B_{factor}": None for factor in FACTORS}
+            )
             continue
 
         y = ticker_df["return"].to_pandas()
@@ -96,98 +78,82 @@ def clean_factor_loadings(factor_loadings: pl.DataFrame) -> pl.DataFrame:
         factor_loadings.unpivot(
             index=["ticker", "date"], variable_name="factor", value_name="loading"
         )
-        .drop_nulls()
         .sort("ticker", "date")
         .with_columns(
             pl.col("factor").replace({f"B_{factor}": factor for factor in FACTORS})
         )
         .with_columns(
             pl.col("loading").ewm_mean(half_life=60).over("ticker", "factor"),
-            pl.col("date").cast(pl.String),
+            pl.col("date").dt.year().alias("year"),
         )
     )
 
 
 @task
 def clean_idio_vol(residuals: pl.DataFrame) -> pl.DataFrame:
-    return (
-        residuals.drop_nulls()
-        .sort("ticker", "date")
-        .select(
-            "ticker",
-            pl.col("date").cast(pl.String),
-            pl.col("residual")
-            .rolling_std(window_size=WINDOW)
-            .ewm_mean(half_life=60)
-            .over("ticker")
-            .alias("idio_vol"),
-        )
+    return residuals.sort("ticker", "date").select(
+        "ticker",
+        "date",
+        pl.col("date").dt.year().alias("year"),
+        pl.col("residual")
+        .rolling_std(window_size=WINDOW)
+        .ewm_mean(half_life=60)
+        .over("ticker")
+        .alias("idio_vol"),
     )
 
 
 @task
 def upload_and_merge_factor_loadings(factor_loadings: pl.DataFrame) -> pl.DataFrame:
-    clickhouse_client = get_clickhouse_client()
+    bear_lake_client = get_bear_lake_client()
     table_name = "factor_loadings"
 
     # Create table if not exists
-    clickhouse_client.command(
-        f"""
-        CREATE TABLE IF NOT EXISTS {table_name} (
-            ticker String,
-            date String,
-            factor String,
-            loading Float64
-        )
-        ENGINE = ReplacingMergeTree()
-        ORDER BY (ticker, date, factor)
-        """
+    bear_lake_client.create(
+        name=table_name,
+        schema={
+            "ticker": pl.String,
+            "date": pl.Date,
+            "year": pl.Int32,
+            "factor": pl.String,
+            "loading": pl.Float64,
+        },
+        partition_keys=["year"],
+        primary_keys=["date", "ticker", "factor"],
+        mode="skip",
     )
 
-    # Insert into table in batches of 1,000,000 rows
-    batch_size = 1_000_000
-    total_rows = len(factor_loadings)
+    # Insert data
+    bear_lake_client.insert(name=table_name, data=factor_loadings, mode="append")
 
-    for i in tqdm(
-        range(0, total_rows, batch_size), desc="Inserting batches", disable=DISABLE_TQDM
-    ):
-        batch = factor_loadings.slice(i, batch_size)
-        clickhouse_client.insert_df_arrow(table_name, batch)
-
-    # Optimize table (deduplicate)
-    clickhouse_client.command(f"OPTIMIZE TABLE {table_name} FINAL")
+    # Optimize
+    bear_lake_client.optimize(name=table_name)
 
 
 @task
 def upload_and_merge_idio_vol(idio_vol: pl.DataFrame) -> pl.DataFrame:
-    clickhouse_client = get_clickhouse_client()
+    bear_lake_client = get_bear_lake_client()
     table_name = "idio_vol"
 
     # Create table if not exists
-    clickhouse_client.command(
-        f"""
-        CREATE TABLE IF NOT EXISTS {table_name} (
-            ticker String,
-            date String,
-            idio_vol Float64
-        )
-        ENGINE = ReplacingMergeTree()
-        ORDER BY (ticker, date)
-        """
+    bear_lake_client.create(
+        name=table_name,
+        schema={
+            "ticker": pl.String,
+            "date": pl.Date,
+            "year": pl.Int32,
+            "idio_vol": pl.Float64,
+        },
+        partition_keys=["year"],
+        primary_keys=["date", "ticker"],
+        mode="skip",
     )
 
-    # Insert into table in batches of 1,000,000 rows
-    batch_size = 1_000_000
-    total_rows = len(idio_vol)
+    # Insert data
+    bear_lake_client.insert(name=table_name, data=idio_vol, mode="append")
 
-    for i in tqdm(
-        range(0, total_rows, batch_size), desc="Inserting batches", disable=DISABLE_TQDM
-    ):
-        batch = idio_vol.slice(i, batch_size)
-        clickhouse_client.insert_df_arrow(table_name, batch)
-
-    # Optimize table (deduplicate)
-    clickhouse_client.command(f"OPTIMIZE TABLE {table_name} FINAL")
+    # Optimize
+    bear_lake_client.optimize(name=table_name)
 
 
 @flow
@@ -228,8 +194,8 @@ def factor_model_daily_flow():
 
     betas, residuals = estimate_regression(stock_returns, etf_returns)
 
-    factor_loadings = clean_factor_loadings(betas).filter(pl.col("date").eq(str(end)))
-    idio_vol = clean_idio_vol(residuals).filter(pl.col("date").eq(str(end)))
+    factor_loadings = clean_factor_loadings(betas).filter(pl.col("date").eq(end))
+    idio_vol = clean_idio_vol(residuals).filter(pl.col("date").eq(end))
 
     upload_and_merge_factor_loadings(factor_loadings)
     upload_and_merge_idio_vol(idio_vol)

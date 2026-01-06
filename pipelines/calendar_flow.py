@@ -2,7 +2,7 @@ import polars as pl
 import pandas as pd
 import datetime as dt
 import pandas_market_calendars as mcal
-from clients import get_clickhouse_client
+from clients import get_bear_lake_client
 from prefect import task, flow
 
 
@@ -18,7 +18,7 @@ def get_market_calendar(start: dt.date, end: dt.date) -> pl.DataFrame:
     calendar_df = (
         pl.from_pandas(schedule.reset_index())
         .select(
-            pl.col("index").cast(pl.Date).cast(pl.String).alias("date"),
+            pl.col("index").cast(pl.Date).alias("date"),
         )
         .drop_nulls()
         .sort("date")
@@ -32,24 +32,19 @@ def upload_calendar_df(calendar_df: pl.DataFrame):
     table_name = "calendar"
 
     # Get ClickHouse client
-    clickhouse_client = get_clickhouse_client()
-
-    # Drop
-    clickhouse_client.command(f"DROP TABLE IF EXISTS {table_name}")
+    bear_lake_client = get_bear_lake_client()
 
     # Create
-    clickhouse_client.command(
-        f"""
-        CREATE TABLE {table_name} (
-            date String
-        )
-        ENGINE = MergeTree()
-        ORDER BY date
-        """
+    bear_lake_client.create(
+        name=table_name,
+        schema={"date": pl.Date},
+        partition_keys=None,
+        primary_keys=["date"],
+        mode="replace",
     )
 
     # Insert
-    clickhouse_client.insert_df_arrow(table=table_name, df=calendar_df)
+    bear_lake_client.insert(name=table_name, data=calendar_df, mode="append")
 
 
 @flow

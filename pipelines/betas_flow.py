@@ -1,39 +1,12 @@
 import polars as pl
-from clients import get_clickhouse_client
+from clients import get_bear_lake_client
 import datetime as dt
 from statsmodels.regression.rolling import RollingOLS
 import statsmodels.api as sm
 from tqdm import tqdm
 from prefect import task, flow
 from variables import WINDOW, DISABLE_TQDM
-from utils import get_trading_date_range
-
-
-@task
-def get_stock_returns(start: dt.date, end: dt.date) -> pl.DataFrame:
-    clickhouse_client = get_clickhouse_client()
-
-    stock_returns_arrow = clickhouse_client.query_arrow(
-        f"""SELECT * FROM stock_returns WHERE date BETWEEN '{start}' AND '{end}'"""
-    )
-
-    return pl.from_arrow(stock_returns_arrow).with_columns(
-        pl.col("date").str.strptime(pl.Date, "%Y-%m-%d")
-    )
-
-
-@task
-def get_benchmark_returns(start: dt.date, end: dt.date) -> pl.DataFrame:
-    clickhouse_client = get_clickhouse_client()
-
-    benchmark_returns_arrow = clickhouse_client.query_arrow(
-        f"""SELECT * FROM benchmark_returns WHERE date BETWEEN '{start}' AND '{end}'"""
-    )
-
-    return pl.from_arrow(benchmark_returns_arrow).select(
-        pl.col("date").str.strptime(pl.Date, "%Y-%m-%d"),
-        pl.col("return").alias("benchmark_return"),
-    )
+from utils import get_trading_date_range, get_stock_returns, get_benchmark_returns
 
 
 @task
@@ -41,7 +14,7 @@ def estimate_regression(
     stock_returns: pl.DataFrame, benchmark_returns: pl.DataFrame
 ) -> pl.DataFrame:
     df = stock_returns.join(
-        other=benchmark_returns,
+        other=benchmark_returns.rename({"return": "benchmark_return"}),
         how="left",
         on="date",
     )
@@ -88,7 +61,8 @@ def clean_betas(betas: pl.DataFrame) -> pl.DataFrame:
         .sort("ticker", "date")
         .select(
             "ticker",
-            pl.col("date").cast(pl.String),
+            "date",
+            pl.col("date").dt.year().alias("year"),
             pl.col("beta").alias("historical_beta"),
             pl.col("beta")
             .ewm_mean(half_life=60)
@@ -100,35 +74,29 @@ def clean_betas(betas: pl.DataFrame) -> pl.DataFrame:
 
 @task
 def upload_and_merge_betas(betas: pl.DataFrame) -> pl.DataFrame:
-    clickhouse_client = get_clickhouse_client()
+    bear_lake_client = get_bear_lake_client()
     table_name = "betas"
 
     # Create table if not exists
-    clickhouse_client.command(
-        f"""
-        CREATE TABLE IF NOT EXISTS {table_name} (
-            ticker String,
-            date String,
-            historical_beta Float64,
-            predicted_beta Float64
-        )
-        ENGINE = ReplacingMergeTree()
-        ORDER BY (ticker, date)
-        """
+    bear_lake_client.create(
+        name=table_name,
+        schema={
+            "ticker": pl.String,
+            "date": pl.Date,
+            "year": pl.Int32,
+            "historical_beta": pl.Float64,
+            "predicted_beta": pl.Float64,
+        },
+        partition_keys=["year"],
+        primary_keys=["ticker", "date"],
+        mode="skip",
     )
 
-    # Insert into table in batches of 1,000,000 rows
-    batch_size = 1_000_000
-    total_rows = len(betas)
+    # Insert data
+    bear_lake_client.insert(name=table_name, data=betas, mode="append")
 
-    for i in tqdm(
-        range(0, total_rows, batch_size), desc="Inserting batches", disable=DISABLE_TQDM
-    ):
-        batch = betas.slice(i, batch_size)
-        clickhouse_client.insert_df_arrow(table_name, batch)
-
-    # Optimize table (deduplicate)
-    clickhouse_client.command(f"OPTIMIZE TABLE {table_name} FINAL")
+    # Optimize
+    bear_lake_client.optimize(name=table_name)
 
 
 @flow
@@ -167,6 +135,6 @@ def betas_daily_flow():
 
     betas_raw = estimate_regression(stock_returns, benchmark_returns)
 
-    betas = clean_betas(betas_raw).filter(pl.col("date").eq(str(end)))
+    betas = clean_betas(betas_raw).filter(pl.col("date").eq(end))
 
     upload_and_merge_betas(betas)

@@ -1,31 +1,9 @@
 from prefect import task, flow
 import polars as pl
 import datetime as dt
-from clients import get_clickhouse_client
+from clients import get_bear_lake_client
 from variables import IC
-from utils import get_trading_date_range
-
-
-@task
-def get_stock_returns(start: dt.date, end: dt.date) -> pl.DataFrame:
-    clickhouse_client = get_clickhouse_client()
-
-    stock_returns_arrow = clickhouse_client.query_arrow(
-        f"""SELECT * FROM stock_returns WHERE date BETWEEN '{start}' AND '{end}'"""
-    )
-
-    return pl.from_arrow(stock_returns_arrow)
-
-
-@task
-def get_idio_vol(start: dt.date, end: dt.date) -> pl.DataFrame:
-    clickhouse_client = get_clickhouse_client()
-
-    stock_returns_arrow = clickhouse_client.query_arrow(
-        f"""SELECT * FROM idio_vol WHERE date BETWEEN '{start}' AND '{end}'"""
-    )
-
-    return pl.from_arrow(stock_returns_arrow)
+from utils import get_trading_date_range, get_idio_vol, get_stock_returns, get_universe
 
 
 @task
@@ -35,6 +13,7 @@ def calculate_signals(stock_returns: pl.DataFrame) -> pl.DataFrame:
         .select(
             "ticker",
             "date",
+            pl.col("date").dt.year().alias("year"),
             pl.lit("reversal").alias("signal"),
             pl.col("return")
             .log1p()
@@ -53,6 +32,7 @@ def calculate_scores(signals: pl.DataFrame, signal_name: str) -> pl.DataFrame:
     return signals.select(
         "ticker",
         "date",
+        pl.col("date").dt.year().alias("year"),
         pl.lit(signal_name).alias("signal"),
         pl.col("value")
         .sub(pl.col("value").mean())
@@ -67,10 +47,10 @@ def calculate_alphas(
 ) -> pl.DataFrame:
     return (
         scores.join(other=idio_vol, on=["ticker", "date"], how="left")
-        .drop_nulls()
         .select(
             "ticker",
             "date",
+            pl.col("date").dt.year().alias("year"),
             pl.lit(signal_name).alias("signal"),
             pl.lit(IC).mul(pl.col("score")).mul(pl.col("idio_vol")).alias("alpha"),
         )
@@ -80,80 +60,83 @@ def calculate_alphas(
 
 @task
 def upload_and_merge_signals(signals: pl.DataFrame) -> pl.DataFrame:
-    clickhouse_client = get_clickhouse_client()
+    bear_lake_client = get_bear_lake_client()
     table_name = "signals"
 
     # Create table if not exists
-    clickhouse_client.command(
-        f"""
-        CREATE TABLE IF NOT EXISTS {table_name} (
-            ticker String,
-            date String,
-            signal String,
-            value Float64
-        )
-        ENGINE = ReplacingMergeTree()
-        ORDER BY (ticker, date, signal)
-        """
+    bear_lake_client.create(
+        name=table_name,
+        schema={
+            "ticker": pl.String,
+            "date": pl.Date,
+            "year": pl.Int32,
+            "signal": pl.String,
+            "value": pl.Float64,
+        },
+        partition_keys=["year"],
+        primary_keys=["ticker", "date", "signal"],
+        mode="skip",
     )
 
     # Insert
-    clickhouse_client.insert_df_arrow(table_name, signals)
+    bear_lake_client.insert(name=table_name, data=signals, mode="append")
 
     # Optimize table (deduplicate)
-    clickhouse_client.command(f"OPTIMIZE TABLE {table_name} FINAL")
+    bear_lake_client.optimize(name=table_name)
 
 
 @task
 def upload_and_merge_scores(scores: pl.DataFrame) -> pl.DataFrame:
-    clickhouse_client = get_clickhouse_client()
+    bear_lake_client = get_bear_lake_client()
     table_name = "scores"
 
     # Create table if not exists
-    clickhouse_client.command(
-        f"""
-        CREATE TABLE IF NOT EXISTS {table_name} (
-            ticker String,
-            date String,
-            signal String,
-            score Float64
-        )
-        ENGINE = ReplacingMergeTree()
-        ORDER BY (ticker, date, signal)
-        """
+    bear_lake_client.create(
+        name=table_name,
+        schema={
+            "ticker": pl.String,
+            "date": pl.Date,
+            "year": pl.Int32,
+            "signal": pl.String,
+            "score": pl.Float64,
+        },
+        partition_keys=["year"],
+        primary_keys=["ticker", "date", "signal"],
+        mode="skip",
     )
 
     # Insert
-    clickhouse_client.insert_df_arrow(table_name, scores)
+    bear_lake_client.insert(name=table_name, data=scores, mode="append")
 
     # Optimize table (deduplicate)
-    clickhouse_client.command(f"OPTIMIZE TABLE {table_name} FINAL")
+    bear_lake_client.optimize(name=table_name)
 
 
 @task
 def upload_and_merge_alphas(alphas: pl.DataFrame) -> pl.DataFrame:
-    clickhouse_client = get_clickhouse_client()
+    bear_lake_client = get_bear_lake_client()
     table_name = "alphas"
 
     # Create table if not exists
-    clickhouse_client.command(
-        f"""
-        CREATE TABLE IF NOT EXISTS {table_name} (
-            ticker String,
-            date String,
-            signal String,
-            alpha Float64
-        )
-        ENGINE = ReplacingMergeTree()
-        ORDER BY (ticker, date, signal)
-        """
+    bear_lake_client.create(
+        name=table_name,
+        schema={
+            "ticker": pl.String,
+            "date": pl.Date,
+            "year": pl.Int32,
+            "signal": pl.String,
+            "alpha": pl.Float64,
+        },
+        partition_keys=["year"],
+        primary_keys=["ticker", "date", "signal"],
+        mode="skip",
     )
 
     # Insert
-    clickhouse_client.insert_df_arrow(table_name, alphas)
+    bear_lake_client.insert(name=table_name, data=alphas, mode="append")
 
     # Optimize table (deduplicate)
-    clickhouse_client.command(f"OPTIMIZE TABLE {table_name} FINAL")
+    bear_lake_client.optimize(name=table_name)
 
 
 @flow
@@ -195,10 +178,10 @@ def reversal_daily_flow():
     stock_returns = get_stock_returns(start, end)
     idio_vol = get_idio_vol(start, end)
 
-    signals = calculate_signals(stock_returns).filter(pl.col("date").eq(str(end)))
-    scores = calculate_scores(signals, signal_name).filter(pl.col("date").eq(str(end)))
+    signals = calculate_signals(stock_returns).filter(pl.col("date").eq(end))
+    scores = calculate_scores(signals, signal_name).filter(pl.col("date").eq(end))
     alphas = calculate_alphas(scores, idio_vol, signal_name).filter(
-        pl.col("date").eq(str(end))
+        pl.col("date").eq(end)
     )
 
     if not (len(signals) > 0 and len(scores) > 0 and len(alphas) > 0):

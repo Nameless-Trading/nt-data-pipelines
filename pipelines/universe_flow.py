@@ -5,7 +5,8 @@ import os
 import io
 from dotenv import load_dotenv
 from prefect import task, flow
-from clients import get_clickhouse_client
+from clients import get_bear_lake_client
+import bear_lake as bl
 
 load_dotenv()
 
@@ -35,15 +36,8 @@ def get_wikipedia_data() -> tuple[pd.DataFrame]:
 
 @task
 def get_calendar_data() -> pl.DataFrame:
-    clickhouse_client = get_clickhouse_client()
-
-    calendar_arrow = clickhouse_client.query_arrow("SELECT * FROM calendar")
-
-    calendar_df = pl.from_arrow(calendar_arrow).with_columns(
-        pl.col("date").str.strptime(pl.Date, "%Y-%m-%d")
-    )
-
-    return calendar_df
+    bear_lake_client = get_bear_lake_client()
+    return bear_lake_client.query(bl.table("calendar"))
 
 
 @task
@@ -132,7 +126,7 @@ def construct_universe(
     universe_df = (
         pl.DataFrame(snapshots)
         .explode("ticker")
-        .cast({"date": pl.String, "ticker": pl.String})
+        .with_columns(pl.col("date").dt.year().alias("year"))
         .sort("date", "ticker")
     )
 
@@ -143,36 +137,20 @@ def construct_universe(
 def upload_universe_df(universe_df: pl.DataFrame):
     table_name = "universe"
 
-    # Get clickhouse client
-    clickhouse_client = get_clickhouse_client()
-
-    # Drop
-    clickhouse_client.command(f"DROP TABLE IF EXISTS {table_name}")
+    # Get ClickHouse client
+    bear_lake_client = get_bear_lake_client()
 
     # Create
-    clickhouse_client.command(
-        f"""
-        CREATE TABLE {table_name} (
-            date String,
-            ticker String
-        )
-        ENGINE = MergeTree()
-        ORDER BY date
-        """
+    bear_lake_client.create(
+        name=table_name,
+        schema={"date": pl.Date, "year": pl.Int32, "ticker": pl.String},
+        partition_keys=["year"],
+        primary_keys=["date", "ticker"],
+        mode="replace",
     )
 
-    # Insert in batches to avoid timeout
-    batch_size = 1_000_000
-    total_rows = len(universe_df)
-
-    for i in range(0, total_rows, batch_size):
-        batch_df = universe_df.slice(i, batch_size)
-        clickhouse_client.insert_df_arrow(
-            table=table_name, df=batch_df, settings={"insert_quorum": "auto"}
-        )
-        print(
-            f"Inserted batch {i // batch_size + 1}: rows {i} to {min(i + batch_size, total_rows)}"
-        )
+    # Insert
+    bear_lake_client.insert(name=table_name, data=universe_df, mode="append")
 
 
 @flow
