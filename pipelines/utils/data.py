@@ -1,8 +1,8 @@
 import datetime as dt
 import polars as pl
-from clients import get_bear_lake_client
 import bear_lake as bl
 from prefect import task
+from pipelines.clients import get_bear_lake_client
 
 
 @task

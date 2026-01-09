@@ -1,4 +1,4 @@
-from clients import get_bear_lake_client
+from pipelines.clients import get_bear_lake_client
 import datetime as dt
 import polars as pl
 import bear_lake as bl
