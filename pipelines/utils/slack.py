@@ -1,5 +1,5 @@
 from slack_sdk.web.slack_response import SlackResponse
-from pipelines.clients import get_slack_client
+from ..clients import get_slack_client
 from slack_sdk.errors import SlackApiError
 import os
 
