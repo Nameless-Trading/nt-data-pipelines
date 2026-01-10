@@ -1,5 +1,5 @@
 import datetime as dt
-from pipelines.clients import get_alpaca_trading_client
+from clients import get_alpaca_trading_client
 from alpaca.trading import GetOrdersRequest
 from alpaca.trading.enums import QueryOrderStatus
 
