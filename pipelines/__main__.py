@@ -1,24 +1,31 @@
 from benchmark_flow import benchmark_backfill_flow, benchmark_daily_flow
+from benchmark_history_flow import (
+    benchmark_history_backfill_flow,
+    benchmark_history_daily_flow,
+)
 from betas_flow import betas_backfill_flow, betas_daily_flow
 from calendar_flow import calendar_backfill_flow
+
 # from stock_prices_yfinance_flow import (
 #     stock_prices_yfinance_backfill_flow,
 #     stock_prices_yfinance_daily_flow,
 # )
 from etf_prices_flow import etf_prices_backfill_flow, etf_prices_daily_flow
-from factor_covariances_flow import (factor_covariances_backfill_flow,
-                                     factor_covariances_daily_flow)
-from factor_model_flow import (factor_model_backfill_flow,
-                               factor_model_daily_flow)
-from portfolio_history_flow import (portfolio_history_backfill_flow,
-                                    portfolio_history_daily_flow)
+from factor_covariances_flow import (
+    factor_covariances_backfill_flow,
+    factor_covariances_daily_flow,
+)
+from factor_model_flow import factor_model_backfill_flow, factor_model_daily_flow
+from portfolio_history_flow import (
+    portfolio_history_backfill_flow,
+    portfolio_history_daily_flow,
+)
 from portfolio_weights_flow import portfolio_weights_daily_flow
 from prefect import flow, serve
 from prefect.schedules import Cron
 from returns_flow import returns_backfill_flow
 from reversal_flow import reversal_backfill_flow, reversal_daily_flow
-from stock_prices_flow import (stock_prices_backfill_flow,
-                               stock_prices_daily_flow)
+from stock_prices_flow import stock_prices_backfill_flow, stock_prices_daily_flow
 from trading_flow import trading_daily_flow
 from universe_flow import universe_backfill_flow
 
@@ -38,6 +45,7 @@ def daily_flow():
     betas_daily_flow()  # Depends on stock_returns and benchmark_returns
     portfolio_weights_daily_flow()  # Depends on everything
     portfolio_history_daily_flow()
+    benchmark_history_daily_flow()
 
 
 @flow
@@ -83,4 +91,5 @@ if __name__ == "__main__":
         portfolio_history_backfill_flow.to_deployment(
             name="portfolio-history-backfill-flow"
         ),
+        benchmark_history_backfill_flow.to_deployment(name="benchmark-backfill-flow"),
     )
