@@ -176,7 +176,7 @@ def send_fill_status_to_slack(trade_start_time: dt.datetime):
 
 
 @task
-def get_last_trading_date() -> dt.date:
+def get_last_market_date() -> list[dt.date]:
     nyse = mcal.get_calendar("NYSE")
     today = dt.datetime.now().date()
 
@@ -186,17 +186,24 @@ def get_last_trading_date() -> dt.date:
     # Filter out today and get the last trading day
     valid_dates = schedule.index[schedule.index.date < today]
 
-    return valid_dates[-1].date() if len(valid_dates) > 0 else None
+    return valid_dates[-1].date()
+
+
+@task
+def market_is_open(today: dt.date) -> bool:
+    nyse = mcal.get_calendar("NYSE")
+    schedule = nyse.schedule(start_date=today, end_date=today)
+    return len(schedule) > 0
 
 
 @flow
 def trading_daily_flow():
     trade_start_time = dt.datetime.now()
 
-    last_trading_date = get_last_trading_date()
+    last_trading_date = get_last_market_date()
     today = dt.datetime.now(ZoneInfo("America/New_York")).date()
 
-    if last_trading_date != today:
+    if not market_is_open(today):
         print("Market is not open today!")
         print("Ending flow.")
         return

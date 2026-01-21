@@ -6,11 +6,13 @@ import polars as pl
 from alpaca.data.enums import Adjustment
 from alpaca.data.requests import StockBarsRequest
 from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
-from clients import get_alpaca_historical_stock_data_client, get_bear_lake_client
+from clients import (get_alpaca_historical_stock_data_client,
+                     get_bear_lake_client)
 from prefect import flow, task
 from rich import print
 from utils import get_last_market_date
-from variables import TIME_ZONE, FACTORS
+from variables import FACTORS, TIME_ZONE
+
 
 @task
 def get_tickers() -> list[str]:
@@ -20,6 +22,7 @@ def get_tickers() -> list[str]:
         .sort()
         .to_list()
     )
+
 
 @task
 def get_history_by_date(tickers: list[str], date_: dt.date) -> pl.DataFrame:
@@ -63,9 +66,7 @@ def get_history(tickers: list[str], start: dt.date, end: dt.date):
 
     history_list = []
     for market_date in market_dates:
-        history_list.append(
-            get_history_by_date(tickers, market_date)
-        )
+        history_list.append(get_history_by_date(tickers, market_date))
 
     return pl.concat(history_list)
 
@@ -124,11 +125,10 @@ def etf_history_daily_flow():
         print("Yesterday:", yesterday)
         return
 
-    etf_history = get_history(
-        tickers, last_market_date, last_market_date
-    )
+    etf_history = get_history(tickers, last_market_date, last_market_date)
 
     upload_and_merge_history(etf_history, "etf_history")
+
 
 @flow
 def stock_history_backfill_flow():
@@ -154,8 +154,6 @@ def stock_history_daily_flow():
         print("Yesterday:", yesterday)
         return
 
-    stock_history = get_history(
-        tickers, last_market_date, last_market_date
-    )
+    stock_history = get_history(tickers, last_market_date, last_market_date)
 
     upload_and_merge_history(stock_history, "stock_history")
