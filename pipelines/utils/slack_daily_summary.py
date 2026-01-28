@@ -16,20 +16,26 @@ def get_current_positions_with_weights(account_value: float) -> list[dict]:
     
     position_list = []
     for pos in positions:
-        # Calculate entry price from cost basis / qty
-        qty = float(pos.qty)
+        # All Alpaca Position fields are strings, convert to float
+        qty = float(pos.qty) if pos.qty else 0
         cost_basis = float(pos.cost_basis) if pos.cost_basis else 0
+        market_value = float(pos.market_value) if pos.market_value else 0
+        current_price = float(pos.current_price) if pos.current_price else 0
+        unrealized_pl = float(pos.unrealized_pl) if pos.unrealized_pl else 0
+        unrealized_plpc = float(pos.unrealized_plpc) if pos.unrealized_plpc else 0
+        
+        # Calculate entry price from cost basis / qty
         entry_price = cost_basis / qty if qty > 0 else 0
         
         position_list.append({
             "ticker": pos.symbol,
             "qty": qty,
-            "value": float(pos.market_value),
-            "weight": float(pos.market_value) / account_value if account_value > 0 else 0,
+            "value": market_value,
+            "weight": market_value / account_value if account_value > 0 else 0,
             "entry_price": entry_price,
-            "current_price": float(pos.current_price) if pos.current_price else 0,
-            "unrealized_pl": float(pos.unrealized_pl) if pos.unrealized_pl else 0,
-            "unrealized_plpc": float(pos.unrealized_plpc) if pos.unrealized_plpc else 0,
+            "current_price": current_price,
+            "unrealized_pl": unrealized_pl,
+            "unrealized_plpc": unrealized_plpc,
         })
     
     # Sort by value descending
