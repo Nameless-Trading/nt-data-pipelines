@@ -1,11 +1,10 @@
-"""Slack failure handler for Prefect flows using hook pattern."""
+"""Slack failure handler for Prefect flows."""
 
 import os
 import traceback
 from typing import Optional
 
 from clients import get_slack_client
-from prefect.flows import FlowHook
 from slack_sdk.errors import SlackApiError
 
 
@@ -98,56 +97,9 @@ def send_flow_failure_notification(
         raise
 
 
-class SlackFailureHook(FlowHook):
-    """Prefect FlowHook that sends Slack notifications on flow failure."""
-    
-    def __init__(self, flow_name: str):
-        """
-        Initialize the hook with a flow name.
-        
-        Args:
-            flow_name: Name of the flow for Slack messages
-        """
-        super().__init__()
-        self.flow_name = flow_name
-    
-    async def hook_fn(self, flow, flow_run, state):
-        """
-        Hook function called when a flow fails.
-        
-        Args:
-            flow: The Prefect Flow object
-            flow_run: The Prefect FlowRun object
-            state: The state object containing failure info
-        """
-        try:
-            # Extract error from the state
-            # In Prefect 3.0+, failed states have exception info
-            if state.result(raise_on_failure=False):
-                # Try to get the actual exception
-                exc = state.result(raise_on_failure=False)
-                if isinstance(exc, Exception):
-                    error = exc
-                else:
-                    error = Exception(str(exc))
-            else:
-                error = Exception("Unknown error")
-            
-            # Build context info
-            context = {
-                "run_id": str(flow_run.id) if flow_run else "unknown",
-                "parameters": flow_run.parameters if flow_run else {},
-            }
-            
-            send_flow_failure_notification(self.flow_name, error, context)
-        except Exception as e:
-            # Don't let the handler failure break the flow
-            print(f"Error in Slack failure hook: {e}")
-
-
-def create_failure_handler(flow_name: str) -> SlackFailureHook:
+def create_failure_handler(flow_name: str):
     """
-    Create a Slack failure hook for a Prefect flow.
+    Create a failure hook for a Prefect flow.
     
     Usage:
         @flow(on_failure=[create_failure_handler("my_flow")])
@@ -158,6 +110,38 @@ def create_failure_handler(flow_name: str) -> SlackFailureHook:
         flow_name: Name of the flow (for the Slack message)
     
     Returns:
-        A SlackFailureHook instance
+        A callable hook function
     """
-    return SlackFailureHook(flow_name)
+    async def failure_hook(flow, flow_run, state):
+        """Handle flow failure and send Slack notification."""
+        try:
+            # Extract error from the state
+            # In Prefect 3.0+, the state contains exception info
+            exc = None
+            
+            # Try to get exception from state
+            try:
+                result = state.result(raise_on_failure=False)
+                if isinstance(result, BaseException):
+                    exc = result
+            except Exception:
+                pass
+            
+            # If we couldn't extract from result, try the state object
+            if exc is None and hasattr(state, 'message'):
+                exc = Exception(state.message)
+            elif exc is None:
+                exc = Exception(f"Flow failed with state: {state.type}")
+            
+            # Build context info
+            context = {
+                "run_id": str(flow_run.id) if flow_run else "unknown",
+                "parameters": flow_run.parameters if flow_run else {},
+            }
+            
+            send_flow_failure_notification(flow_name, exc, context)
+        except Exception as e:
+            # Don't let the handler failure break the flow
+            print(f"Error in Slack failure hook: {e}")
+    
+    return failure_hook
