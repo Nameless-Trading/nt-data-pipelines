@@ -11,6 +11,7 @@ from prefect import flow, get_run_logger, task
 from utils import get_portfolio_weights
 from utils.alpaca import get_alpaca_filled_orders
 from utils.slack_daily_summary import send_daily_trading_summary
+from utils.slack_failure_handler import create_failure_handler
 
 
 @task
@@ -199,7 +200,7 @@ def market_is_open(today: dt.date) -> bool:
     return len(schedule) > 0
 
 
-@flow
+@flow(on_failure=create_failure_handler("trading_daily_flow"))
 def trading_daily_flow():
     trade_start_time = dt.datetime.now()
 
