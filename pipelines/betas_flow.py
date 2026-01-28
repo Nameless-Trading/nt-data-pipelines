@@ -6,8 +6,7 @@ from clients import get_bear_lake_client
 from prefect import flow, task
 from statsmodels.regression.rolling import RollingOLS
 from tqdm import tqdm
-from utils import (get_benchmark_returns, get_stock_returns,
-                   get_trading_date_range)
+from utils import get_benchmark_returns, get_stock_returns, get_trading_date_range
 from variables import DISABLE_TQDM, WINDOW
 
 

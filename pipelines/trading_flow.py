@@ -167,7 +167,7 @@ def send_fill_status_to_slack(trade_start_time: dt.datetime):
         filled_orders = get_alpaca_filled_orders(after=trade_start_time)
         account = alpaca_client.get_account()
         account_value = float(account.equity)
-        
+
         logger.info(f"Found {len(filled_orders)} filled orders")
 
         if len(filled_orders) > 0:
@@ -176,7 +176,9 @@ def send_fill_status_to_slack(trade_start_time: dt.datetime):
         else:
             logger.warning("No filled orders found")
     except Exception as e:
-        logger.error(f"Failed to send Slack notification for daily trading summary: {e}")
+        logger.error(
+            f"Failed to send Slack notification for daily trading summary: {e}"
+        )
 
 
 @task
@@ -233,6 +235,10 @@ def trading_daily_flow():
         target_notionals, current_notionals, positions_to_close
     )
 
-    close_positions(positions_to_close)
-    place_all_orders(notional_deltas)
+    # close_positions(positions_to_close)
+    # place_all_orders(notional_deltas)
     send_fill_status_to_slack(trade_start_time)
+
+
+if __name__ == "__main__":
+    trading_daily_flow()

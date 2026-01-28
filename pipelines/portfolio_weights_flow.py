@@ -5,9 +5,16 @@ import polars as pl
 import ray
 from clients import get_bear_lake_client
 from prefect import flow, task
-from utils import (get_alphas, get_benchmark_weights, get_covariance_matrix,
-                   get_factor_covariances, get_factor_loadings, get_idio_vol,
-                   get_last_market_date, get_optimal_weights_dynamic)
+from utils import (
+    get_alphas,
+    get_benchmark_weights,
+    get_covariance_matrix,
+    get_factor_covariances,
+    get_factor_loadings,
+    get_idio_vol,
+    get_last_market_date,
+    get_optimal_weights_dynamic,
+)
 from variables import TARGET_ACTIVE_RISK
 
 # Suppress Ray GPU warning for CPU-only usage
