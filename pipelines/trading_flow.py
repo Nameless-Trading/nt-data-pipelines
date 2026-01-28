@@ -200,7 +200,7 @@ def market_is_open(today: dt.date) -> bool:
     return len(schedule) > 0
 
 
-@flow(on_failure=create_failure_handler("trading_daily_flow"))
+@flow(on_failure=[create_failure_handler("trading_daily_flow")])
 def trading_daily_flow():
     trade_start_time = dt.datetime.now()
 
