@@ -5,6 +5,7 @@ from unittest.mock import Mock, patch, MagicMock
 from pipelines.utils.slack_daily_summary import (
     categorize_trades,
     get_current_positions_with_weights,
+    get_position_changes,
 )
 
 
@@ -172,7 +173,7 @@ class TestGetCurrentPositionsWithWeights:
         mock_pos1.symbol = "AAPL"
         mock_pos1.qty = 100
         mock_pos1.market_value = 30000
-        mock_pos1.avg_fill_price = 300
+        mock_pos1.cost_basis = 30000  # 100 * 300
         mock_pos1.current_price = 300
         mock_pos1.unrealized_pl = 1000
         mock_pos1.unrealized_plpc = 0.0345
@@ -181,7 +182,7 @@ class TestGetCurrentPositionsWithWeights:
         mock_pos2.symbol = "MSFT"
         mock_pos2.qty = 50
         mock_pos2.market_value = 20000
-        mock_pos2.avg_fill_price = 400
+        mock_pos2.cost_basis = 20000  # 50 * 400
         mock_pos2.current_price = 400
         mock_pos2.unrealized_pl = 500
         mock_pos2.unrealized_plpc = 0.0263
@@ -208,7 +209,7 @@ class TestGetCurrentPositionsWithWeights:
         mock_pos1.symbol = "SMALL"
         mock_pos1.qty = 10
         mock_pos1.market_value = 1000
-        mock_pos1.avg_fill_price = 100
+        mock_pos1.cost_basis = 1000  # 10 * 100
         mock_pos1.current_price = 100
         mock_pos1.unrealized_pl = 0
         mock_pos1.unrealized_plpc = 0
@@ -217,7 +218,7 @@ class TestGetCurrentPositionsWithWeights:
         mock_pos2.symbol = "LARGE"
         mock_pos2.qty = 100
         mock_pos2.market_value = 50000
-        mock_pos2.avg_fill_price = 500
+        mock_pos2.cost_basis = 50000  # 100 * 500
         mock_pos2.current_price = 500
         mock_pos2.unrealized_pl = 2000
         mock_pos2.unrealized_plpc = 0.04
@@ -249,7 +250,7 @@ class TestGetCurrentPositionsWithWeights:
         mock_pos.symbol = "AAPL"
         mock_pos.qty = 100
         mock_pos.market_value = 30000
-        mock_pos.avg_fill_price = 300
+        mock_pos.cost_basis = 30000  # 100 * 300
         mock_pos.current_price = 300
         mock_pos.unrealized_pl = 1000
         mock_pos.unrealized_plpc = 0.0345
@@ -270,7 +271,7 @@ class TestGetCurrentPositionsWithWeights:
         mock_pos.symbol = "AAPL"
         mock_pos.qty = 100
         mock_pos.market_value = 30000
-        mock_pos.avg_fill_price = 300
+        mock_pos.cost_basis = 30000  # 100 * 300
         mock_pos.current_price = None  # None current price
         mock_pos.unrealized_pl = None
         mock_pos.unrealized_plpc = None
@@ -285,6 +286,114 @@ class TestGetCurrentPositionsWithWeights:
         assert result[0]["current_price"] == 0
         assert result[0]["unrealized_pl"] == 0
         assert result[0]["unrealized_plpc"] == 0
+
+
+class TestGetPositionChanges:
+    """Tests for position change tracking."""
+
+    def test_get_position_changes_initiated(self):
+        """Test identifying newly initiated positions."""
+        trades = [
+            {
+                "side": "buy",
+                "notional": 1000,
+                "ticker": "AAPL",
+                "filled_qty": 10,
+                "filled_avg_price": 100,
+            },
+            {
+                "side": "buy",
+                "notional": 2000,
+                "ticker": "MSFT",
+                "filled_qty": 20,
+                "filled_avg_price": 100,
+            },
+        ]
+
+        result = get_position_changes(trades)
+
+        assert len(result["initiated"]) == 2
+        assert len(result["exited"]) == 0
+        assert result["initiated"][0]["ticker"] == "AAPL"
+        assert result["initiated"][0]["qty"] == 10
+        assert result["initiated"][0]["avg_price"] == 100
+
+    def test_get_position_changes_exited(self):
+        """Test identifying exited positions."""
+        trades = [
+            {
+                "side": "sell",
+                "notional": 1000,
+                "ticker": "AAPL",
+                "filled_qty": 10,
+                "filled_avg_price": 100,
+            },
+            {
+                "side": "sell",
+                "notional": 2000,
+                "ticker": "MSFT",
+                "filled_qty": 20,
+                "filled_avg_price": 100,
+            },
+        ]
+
+        result = get_position_changes(trades)
+
+        assert len(result["initiated"]) == 0
+        assert len(result["exited"]) == 2
+        assert result["exited"][0]["ticker"] == "AAPL"
+        assert result["exited"][0]["qty"] == 10
+
+    def test_get_position_changes_mixed(self):
+        """Test with both buys and sells of different tickers."""
+        trades = [
+            {"side": "buy", "notional": 1000, "ticker": "AAPL", "filled_qty": 10, "filled_avg_price": 100},
+            {"side": "sell", "notional": 500, "ticker": "MSFT", "filled_qty": 5, "filled_avg_price": 100},
+        ]
+
+        result = get_position_changes(trades)
+
+        assert len(result["initiated"]) == 1
+        assert result["initiated"][0]["ticker"] == "AAPL"
+        assert len(result["exited"]) == 1
+        assert result["exited"][0]["ticker"] == "MSFT"
+
+    def test_get_position_changes_buy_and_sell_same_ticker(self):
+        """Test buying and selling the same ticker (not initiated or exited)."""
+        trades = [
+            {"side": "buy", "notional": 1000, "ticker": "AAPL", "filled_qty": 10, "filled_avg_price": 100},
+            {"side": "sell", "notional": 500, "ticker": "AAPL", "filled_qty": 5, "filled_avg_price": 100},
+        ]
+
+        result = get_position_changes(trades)
+
+        # Neither initiated nor exited since we bought and sold the same ticker
+        assert len(result["initiated"]) == 0
+        assert len(result["exited"]) == 0
+
+    def test_get_position_changes_avg_price(self):
+        """Test average price calculation for multiple trades."""
+        trades = [
+            {"side": "buy", "notional": 1000, "ticker": "AAPL", "filled_qty": 10, "filled_avg_price": 100},
+            {"side": "buy", "notional": 500, "ticker": "AAPL", "filled_qty": 5, "filled_avg_price": 100},
+        ]
+
+        result = get_position_changes(trades)
+
+        # Both trades are buys, so it's initiated
+        assert len(result["initiated"]) == 1
+        assert result["initiated"][0]["qty"] == 15
+        assert result["initiated"][0]["notional"] == 1500
+        assert result["initiated"][0]["avg_price"] == 100
+
+    def test_get_position_changes_empty(self):
+        """Test with no trades."""
+        trades = []
+
+        result = get_position_changes(trades)
+
+        assert len(result["initiated"]) == 0
+        assert len(result["exited"]) == 0
 
 
 if __name__ == "__main__":
