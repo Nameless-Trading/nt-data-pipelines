@@ -3,7 +3,7 @@ import os
 from dotenv import load_dotenv
 from slack_sdk import WebClient
 
-load_dotenv()
+load_dotenv(override=True)
 
 
 def get_slack_client():

@@ -3,7 +3,7 @@ import os
 import bear_lake as bl
 from dotenv import load_dotenv
 
-load_dotenv()
+load_dotenv(override=True)
 
 access_key_id = os.getenv("ACCESS_KEY_ID")
 secret_access_key = os.getenv("SECRET_ACCESS_KEY")

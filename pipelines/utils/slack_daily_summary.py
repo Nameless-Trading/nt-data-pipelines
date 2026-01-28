@@ -1,131 +1,47 @@
-"""Enhanced daily trading summary for Slack."""
+"""Daily trading summary for Slack."""
 
 import os
 from typing import Optional
 
-from alpaca.trading import GetOrdersRequest
-from alpaca.trading.enums import QueryOrderStatus
 from clients import get_alpaca_trading_client, get_slack_client
 from slack_sdk.errors import SlackApiError
 
 
-def get_current_positions_with_weights(account_value: float) -> list[dict]:
-    """Get current positions with calculated weights and values."""
+def get_current_positions() -> list[dict]:
+    """Get current positions with ticker and value."""
     alpaca_client = get_alpaca_trading_client()
     positions = alpaca_client.get_all_positions()
 
-    position_list = []
-    for pos in positions:
-        # All Alpaca Position fields are strings, convert to float
-        qty = float(pos.qty) if pos.qty else 0
-        cost_basis = float(pos.cost_basis) if pos.cost_basis else 0
-        market_value = float(pos.market_value) if pos.market_value else 0
-        current_price = float(pos.current_price) if pos.current_price else 0
-        unrealized_pl = float(pos.unrealized_pl) if pos.unrealized_pl else 0
-        unrealized_plpc = float(pos.unrealized_plpc) if pos.unrealized_plpc else 0
-
-        # Calculate entry price from cost basis / qty
-        entry_price = cost_basis / qty if qty > 0 else 0
-
-        position_list.append(
-            {
-                "ticker": pos.symbol,
-                "qty": qty,
-                "value": market_value,
-                "weight": market_value / account_value if account_value > 0 else 0,
-                "entry_price": entry_price,
-                "current_price": current_price,
-                "unrealized_pl": unrealized_pl,
-                "unrealized_plpc": unrealized_plpc,
-            }
-        )
+    position_list = [
+        {
+            "ticker": pos.symbol,
+            "value": float(pos.market_value) if pos.market_value else 0,
+        }
+        for pos in positions
+    ]
 
     # Sort by value descending
     return sorted(position_list, key=lambda x: x["value"], reverse=True)
 
 
 def categorize_trades(filled_orders: list[dict]) -> dict:
-    """Categorize trades into buys and sells, find largest trades."""
+    """Categorize trades into buys and sells, find top trades by value."""
     buys = [o for o in filled_orders if o["side"] == "buy"]
     sells = [o for o in filled_orders if o["side"] == "sell"]
 
-    # Get largest trades by notional
-    all_trades_sorted = sorted(filled_orders, key=lambda x: x["notional"], reverse=True)
-    largest_trades = all_trades_sorted[:3]  # Top 3
+    # Get top 3 buys and sells by notional
+    top_buys = sorted(buys, key=lambda x: x["notional"], reverse=True)[:3]
+    top_sells = sorted(sells, key=lambda x: x["notional"], reverse=True)[:3]
 
     return {
         "buys": buys,
         "sells": sells,
-        "largest_trades": largest_trades,
+        "top_buys": top_buys,
+        "top_sells": top_sells,
         "total_buys_notional": sum(o["notional"] for o in buys),
         "total_sells_notional": sum(o["notional"] for o in sells),
         "total_notional": sum(o["notional"] for o in filled_orders),
     }
-
-
-def get_position_changes(filled_orders: list[dict]) -> dict:
-    """Identify new positions and exited positions from today's trades."""
-    buys_by_ticker = {}
-    sells_by_ticker = {}
-
-    for order in filled_orders:
-        ticker = order["ticker"]
-        qty = order["filled_qty"]
-        price = order["filled_avg_price"]
-        notional = order["notional"]
-
-        if order["side"] == "buy":
-            if ticker not in buys_by_ticker:
-                buys_by_ticker[ticker] = {"qty": 0, "total_notional": 0, "prices": []}
-            buys_by_ticker[ticker]["qty"] += qty
-            buys_by_ticker[ticker]["total_notional"] += notional
-            buys_by_ticker[ticker]["prices"].append(price)
-        else:  # sell
-            if ticker not in sells_by_ticker:
-                sells_by_ticker[ticker] = {"qty": 0, "total_notional": 0, "prices": []}
-            sells_by_ticker[ticker]["qty"] += qty
-            sells_by_ticker[ticker]["total_notional"] += notional
-            sells_by_ticker[ticker]["prices"].append(price)
-
-    # Determine initiated and exited positions
-    initiated = []
-    exited = []
-
-    for ticker, buy_data in buys_by_ticker.items():
-        # If we bought but didn't sell this ticker, it's initiated
-        if ticker not in sells_by_ticker:
-            avg_price = (
-                buy_data["total_notional"] / buy_data["qty"]
-                if buy_data["qty"] > 0
-                else 0
-            )
-            initiated.append(
-                {
-                    "ticker": ticker,
-                    "qty": buy_data["qty"],
-                    "avg_price": avg_price,
-                    "notional": buy_data["total_notional"],
-                }
-            )
-
-    for ticker, sell_data in sells_by_ticker.items():
-        # If we sold but didn't buy this ticker, it's exited
-        if ticker not in buys_by_ticker:
-            avg_price = (
-                sell_data["total_notional"] / sell_data["qty"]
-                if sell_data["qty"] > 0
-                else 0
-            )
-            exited.append(
-                {
-                    "ticker": ticker,
-                    "qty": sell_data["qty"],
-                    "avg_price": avg_price,
-                    "notional": sell_data["total_notional"],
-                }
-            )
-
-    return {"initiated": initiated, "exited": exited}
 
 
 def send_daily_trading_summary(
@@ -162,10 +78,9 @@ def send_daily_trading_summary(
         return
 
     # Get positions and categorize trades
-    positions = get_current_positions_with_weights(account_value)
+    positions = get_current_positions()
     top_5_positions = positions[:5]
     trade_summary = categorize_trades(filled_orders)
-    position_changes = get_position_changes(filled_orders)
 
     # Calculate day P&L
     day_pnl = account_value - (previous_account_value or account_value)
@@ -225,13 +140,12 @@ def send_daily_trading_summary(
         )
         blocks.append({"type": "divider"})
 
-    # Largest trades section
-    if trade_summary["largest_trades"]:
-        largest_lines = []
-        for i, trade in enumerate(trade_summary["largest_trades"], 1):
-            emoji = "📈" if trade["side"] == "buy" else "📉"
-            largest_lines.append(
-                f"{emoji} {i}. {trade['side'].upper()} {trade['filled_qty']:.0f} {trade['ticker']} @ ${trade['filled_avg_price']:.2f} = ${trade['notional']:,.2f}"
+    # Top 3 Buys section
+    if trade_summary["top_buys"]:
+        buy_lines = []
+        for i, trade in enumerate(trade_summary["top_buys"], 1):
+            buy_lines.append(
+                f"{i}. {trade['filled_qty']:.2f} `{trade['ticker']}` @ ${trade['filled_avg_price']:.2f} = ${trade['notional']:,.2f}"
             )
 
         blocks.append(
@@ -239,40 +153,26 @@ def send_daily_trading_summary(
                 "type": "section",
                 "text": {
                     "type": "mrkdwn",
-                    "text": "*Largest Trades*\n" + "\n".join(largest_lines),
+                    "text": "*Top 3 Buys*\n" + "\n".join(buy_lines),
                 },
             }
         )
 
-    # Initiated positions section
-    if position_changes["initiated"]:
-        initiated_lines = [f"*New Positions ({len(position_changes['initiated'])})*"]
-        for pos in position_changes["initiated"]:
-            initiated_lines.append(
-                f"✅ {pos['ticker']}: {pos['qty']:.0f} shares @ ${pos['avg_price']:.2f} = ${pos['notional']:,.2f}"
+    # Top 3 Sells section
+    if trade_summary["top_sells"]:
+        sell_lines = []
+        for i, trade in enumerate(trade_summary["top_sells"], 1):
+            sell_lines.append(
+                f"{i}. {trade['filled_qty']:.2f} `{trade['ticker']}` @ ${trade['filled_avg_price']:.2f} = ${trade['notional']:,.2f}"
             )
 
-        blocks.append({"type": "divider"})
         blocks.append(
             {
                 "type": "section",
-                "text": {"type": "mrkdwn", "text": "\n".join(initiated_lines)},
-            }
-        )
-
-    # Exited positions section
-    if position_changes["exited"]:
-        exited_lines = [f"*Positions Exited ({len(position_changes['exited'])})*"]
-        for pos in position_changes["exited"]:
-            exited_lines.append(
-                f"❌ {pos['ticker']}: {pos['qty']:.0f} shares @ ${pos['avg_price']:.2f} = ${pos['notional']:,.2f}"
-            )
-
-        blocks.append({"type": "divider"})
-        blocks.append(
-            {
-                "type": "section",
-                "text": {"type": "mrkdwn", "text": "\n".join(exited_lines)},
+                "text": {
+                    "type": "mrkdwn",
+                    "text": "*Top 3 Sells*\n" + "\n".join(sell_lines),
+                },
             }
         )
 
@@ -280,10 +180,7 @@ def send_daily_trading_summary(
     if top_5_positions:
         position_lines = [f"*Top {min(5, len(positions))} Positions*"]
         for i, pos in enumerate(top_5_positions, 1):
-            pl_emoji = "📈" if pos["unrealized_pl"] >= 0 else "📉"
-            position_lines.append(
-                f"{i}. {pos['ticker']}: {pos['qty']:.0f} @ ${pos['current_price']:.2f} = ${pos['value']:,.2f} ({pos['weight'] * 100:.1f}%) {pl_emoji} {pos['unrealized_plpc']:+.2f}%"
-            )
+            position_lines.append(f"{i}. `{pos['ticker']}`: ${pos['value']:,.2f}")
 
         blocks.append({"type": "divider"})
         blocks.append(

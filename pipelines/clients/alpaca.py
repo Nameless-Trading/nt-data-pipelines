@@ -6,7 +6,7 @@ from alpaca.trading import GetOrdersRequest, TradingClient
 from alpaca.trading.enums import QueryOrderStatus
 from dotenv import load_dotenv
 
-load_dotenv()
+load_dotenv(override=True)
 
 
 def get_alpaca_historical_stock_data_client():
