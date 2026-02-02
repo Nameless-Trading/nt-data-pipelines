@@ -40,8 +40,8 @@ def get_tickers_with_date_range() -> pl.DataFrame:
         bl.table("universe")
         .group_by("ticker")
         .agg(
-            bl.col("date").min().alias("min_date"),
-            bl.col("date").max().alias("max_date"),
+            pl.col("date").min().alias("min_date"),
+            pl.col("date").max().alias("max_date"),
         )
     )
 
@@ -344,3 +344,14 @@ def stock_prices_yfinance_daily_flow():
     tickers_df = get_tickers_with_date_range()
     stock_prices_df = get_stock_prices_yfinance_by_year(tickers_df, start, end)
     upload_and_merge_stock_prices_yfinance_df(stock_prices_df)
+
+if __name__ == '__main__':
+    from rich import print
+    bear_lake_client = get_bear_lake_client()
+    bear_lake_client.drop('stock_prices_yfinance')
+
+    stock_prices_yfinance_backfill_flow()
+
+    print(bear_lake_client.query(
+        bl.table('stock_prices_yfinance')
+    ))
