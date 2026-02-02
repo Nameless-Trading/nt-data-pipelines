@@ -252,36 +252,8 @@ def get_stock_prices_yfinance_batch(
     if not all_data:
         return pl.DataFrame(schema=_empty_schema())
 
-    return pl.concat(all_data).sort("date", "ticker")
-
-
-@task
-def get_stock_prices_yfinance_by_year(
-    tickers_df: pl.DataFrame, start: dt.datetime, end: dt.datetime
-) -> pl.DataFrame:
-    """
-    Fetch stock prices in batches by year.
-    """
-    logger = get_run_logger()
-    years = range(start.year, end.year + 1)
-    stock_prices_list = []
-
-    for year in years:
-        year_start = max(dt.datetime(year, 1, 1, 0, 0, 0, tzinfo=TIME_ZONE), start)
-        year_end = min(dt.datetime(year, 12, 31, 23, 59, 59, tzinfo=TIME_ZONE), end)
-
-        logger.info(f"Fetching year {year}: {year_start.date()} to {year_end.date()}")
-
-        stock_prices = get_stock_prices_yfinance_batch(tickers_df, year_start, year_end)
-
-        if not stock_prices.is_empty():
-            stock_prices_list.append(stock_prices)
-
-    if not stock_prices_list:
-        return pl.DataFrame(schema=_empty_schema())
-
     return (
-        pl.concat(stock_prices_list)
+        pl.concat(all_data)
         .unique(subset=["ticker", "date"])
         .with_columns(pl.col("date").dt.year().alias("year"))
         .sort("date", "ticker")
@@ -327,7 +299,7 @@ def stock_prices_yfinance_backfill_flow():
     end = dt.datetime.now(TIME_ZONE) - dt.timedelta(days=1)
 
     tickers_df = get_tickers_with_date_range()
-    stock_prices_df = get_stock_prices_yfinance_by_year(tickers_df, start, end)
+    stock_prices_df = get_stock_prices_yfinance_batch(tickers_df, start, end)
     upload_and_merge_stock_prices_yfinance_df(stock_prices_df)
 
 
@@ -347,7 +319,7 @@ def stock_prices_yfinance_daily_flow():
     end = dt.datetime.combine(yesterday, dt.time(23, 59, 59)).replace(tzinfo=TIME_ZONE)
 
     tickers_df = get_tickers_with_date_range()
-    stock_prices_df = get_stock_prices_yfinance_by_year(tickers_df, start, end)
+    stock_prices_df = get_stock_prices_yfinance_batch(tickers_df, start, end)
     upload_and_merge_stock_prices_yfinance_df(stock_prices_df)
 
 if __name__ == '__main__':
