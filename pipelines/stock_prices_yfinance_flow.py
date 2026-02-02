@@ -9,6 +9,16 @@ from utils import get_last_market_date
 from variables import TIME_ZONE
 
 
+def to_yfinance_ticker(ticker: str) -> str:
+    """Convert database ticker to yfinance format (BF.B -> BF-B)"""
+    return ticker.replace(".", "-")
+
+
+def to_db_ticker(yf_ticker: str) -> str:
+    """Convert yfinance ticker back to database format (BF-B -> BF.B)"""
+    return yf_ticker.replace("-", ".")
+
+
 def _empty_schema() -> dict:
     """Return the expected schema for an empty DataFrame."""
     return {
@@ -73,9 +83,10 @@ def get_stock_prices_yfinance(
         )
 
         try:
-            # Download single ticker
+            # Download single ticker (convert to yfinance format for API call)
+            yf_ticker = to_yfinance_ticker(ticker)
             data = yf.download(
-                tickers=ticker,
+                tickers=yf_ticker,
                 start=start_naive,
                 end=effective_end_naive,
                 progress=False,
@@ -151,12 +162,15 @@ def get_stock_prices_yfinance_batch(
     # Process in batches
     for i in range(0, len(tickers), batch_size):
         batch = tickers[i : i + batch_size]
+        # Convert to yfinance format for API call, keep mapping to restore later
+        yf_batch = [to_yfinance_ticker(t) for t in batch]
+        yf_to_db = {to_yfinance_ticker(t): t for t in batch}
         logger.info(f"Fetching batch {i // batch_size + 1}: {len(batch)} tickers")
 
         try:
-            # Download batch of tickers
+            # Download batch of tickers (using yfinance format)
             data = yf.download(
-                tickers=batch,
+                tickers=yf_batch,
                 start=start_naive,
                 end=end_naive,
                 progress=False,
@@ -169,12 +183,12 @@ def get_stock_prices_yfinance_batch(
 
             # Handle single ticker case (no MultiIndex)
             if len(batch) == 1:
-                ticker = batch[0]
-                max_date = max_date_lookup[ticker]
+                db_ticker = batch[0]  # Original db format
+                max_date = max_date_lookup[db_ticker]
                 data = data.reset_index()
                 
                 ticker_df = pl.from_pandas(data).select(
-                    pl.lit(ticker).alias("ticker"),
+                    pl.lit(db_ticker).alias("ticker"),
                     pl.col("Date").dt.date().alias("date"),
                     pl.col("Open").alias("open"),
                     pl.col("High").alias("high"),
@@ -191,20 +205,21 @@ def get_stock_prices_yfinance_batch(
                 continue
 
             # Handle multiple tickers (MultiIndex columns grouped by ticker)
-            for ticker in batch:
+            for yf_ticker in yf_batch:
+                db_ticker = yf_to_db[yf_ticker]  # Map back to db format
                 try:
-                    if ticker not in data.columns.get_level_values(0):
+                    if yf_ticker not in data.columns.get_level_values(0):
                         continue
 
-                    max_date = max_date_lookup[ticker]
-                    ticker_data = data[ticker].copy()
+                    max_date = max_date_lookup[db_ticker]
+                    ticker_data = data[yf_ticker].copy()
                     ticker_data = ticker_data.reset_index()
 
                     if ticker_data.empty or ticker_data["Close"].isna().all():
                         continue
 
                     ticker_df = pl.from_pandas(ticker_data).select(
-                        pl.lit(ticker).alias("ticker"),
+                        pl.lit(db_ticker).alias("ticker"),  # Use db format for storage
                         pl.col("Date").dt.date().alias("date"),
                         pl.col("Open").alias("open"),
                         pl.col("High").alias("high"),
@@ -222,7 +237,7 @@ def get_stock_prices_yfinance_batch(
                         all_data.append(ticker_df)
 
                 except Exception as e:
-                    logger.warning(f"Failed to process {ticker} in batch: {e}")
+                    logger.warning(f"Failed to process {db_ticker} in batch: {e}")
                     continue
 
         except Exception as e:
