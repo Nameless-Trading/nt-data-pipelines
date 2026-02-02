@@ -9,16 +9,6 @@ from utils import get_last_market_date
 from variables import TIME_ZONE
 
 
-@task
-def get_tickers() -> list[str]:
-    bear_lake_client = get_bear_lake_client()
-    return (
-        bear_lake_client.query(bl.table("universe").select("ticker").unique())["ticker"]
-        .sort()
-        .to_list()
-    )
-
-
 def _empty_schema() -> dict:
     """Return the expected schema for an empty DataFrame."""
     return {
@@ -33,16 +23,30 @@ def _empty_schema() -> dict:
 
 
 @task
+def get_tickers_with_date_range() -> pl.DataFrame:
+    """Get tickers with their date ranges from universe."""
+    bear_lake_client = get_bear_lake_client()
+    return bear_lake_client.query(
+        bl.table("universe")
+        .group_by("ticker")
+        .agg(
+            bl.col("date").min().alias("min_date"),
+            bl.col("date").max().alias("max_date"),
+        )
+    )
+
+
+@task
 def get_stock_prices_yfinance(
-    tickers: list[str], start: dt.datetime, end: dt.datetime
+    tickers_df: pl.DataFrame, start: dt.datetime, end: dt.datetime
 ) -> pl.DataFrame:
     """
     Fetch historical stock prices from yfinance.
-    Downloads each ticker individually to avoid MultiIndex complexity.
+    Uses date ranges from universe to skip delisted tickers and cap end dates.
     """
     logger = get_run_logger()
 
-    if not tickers:
+    if tickers_df.is_empty():
         return pl.DataFrame(schema=_empty_schema())
 
     # Convert to naive datetime (yfinance expects dates without timezone)
@@ -50,16 +54,32 @@ def get_stock_prices_yfinance(
     end_naive = end.replace(tzinfo=None)
 
     all_data = []
+    skipped = 0
+    fetched = 0
 
-    for ticker in tickers:
+    for row in tickers_df.iter_rows(named=True):
+        ticker = row["ticker"]
+        max_date = row["max_date"]
+
+        # Skip if we're requesting data after this ticker was delisted
+        if start.date() > max_date:
+            skipped += 1
+            continue
+
+        # Cap the end date to when the ticker was last active
+        effective_end_date = min(end.date(), max_date)
+        effective_end_naive = dt.datetime.combine(
+            effective_end_date, dt.time(23, 59, 59)
+        )
+
         try:
-            # Download single ticker - returns simple DataFrame
+            # Download single ticker
             data = yf.download(
                 tickers=ticker,
                 start=start_naive,
-                end=end_naive,
+                end=effective_end_naive,
                 progress=False,
-                auto_adjust=True,  # Use adjusted prices
+                auto_adjust=True,
             )
 
             if data.empty:
@@ -80,10 +100,13 @@ def get_stock_prices_yfinance(
             )
 
             all_data.append(ticker_df)
+            fetched += 1
 
         except Exception as e:
             logger.warning(f"Failed to fetch {ticker}: {e}")
             continue
+
+    logger.info(f"Fetched {fetched} tickers, skipped {skipped} delisted")
 
     if not all_data:
         return pl.DataFrame(schema=_empty_schema())
@@ -93,23 +116,39 @@ def get_stock_prices_yfinance(
 
 @task
 def get_stock_prices_yfinance_batch(
-    tickers: list[str], start: dt.datetime, end: dt.datetime, batch_size: int = 50
+    tickers_df: pl.DataFrame, start: dt.datetime, end: dt.datetime, batch_size: int = 50
 ) -> pl.DataFrame:
     """
     Fetch stock prices using yf.download() with batched tickers.
-    More efficient than individual downloads but handles MultiIndex properly.
+    Uses date ranges from universe to filter and cap dates appropriately.
     """
     logger = get_run_logger()
 
-    if not tickers:
+    if tickers_df.is_empty():
         return pl.DataFrame(schema=_empty_schema())
 
     start_naive = start.replace(tzinfo=None)
     end_naive = end.replace(tzinfo=None)
 
+    # Filter to only tickers active during this period
+    active_tickers_df = tickers_df.filter(pl.col("max_date") >= start.date())
+    
+    if active_tickers_df.is_empty():
+        logger.info(f"No active tickers for period {start.date()} to {end.date()}")
+        return pl.DataFrame(schema=_empty_schema())
+
+    # Build a lookup for max_date by ticker
+    max_date_lookup = {
+        row["ticker"]: row["max_date"] 
+        for row in active_tickers_df.iter_rows(named=True)
+    }
+    
+    tickers = list(max_date_lookup.keys())
+    logger.info(f"Fetching {len(tickers)} active tickers (filtered from {len(tickers_df)})")
+
     all_data = []
 
-    # Process in batches to avoid overwhelming the API
+    # Process in batches
     for i in range(0, len(tickers), batch_size):
         batch = tickers[i : i + batch_size]
         logger.info(f"Fetching batch {i // batch_size + 1}: {len(batch)} tickers")
@@ -122,7 +161,7 @@ def get_stock_prices_yfinance_batch(
                 end=end_naive,
                 progress=False,
                 auto_adjust=True,
-                group_by="ticker",  # Group by ticker for easier processing
+                group_by="ticker",
             )
 
             if data.empty:
@@ -131,7 +170,9 @@ def get_stock_prices_yfinance_batch(
             # Handle single ticker case (no MultiIndex)
             if len(batch) == 1:
                 ticker = batch[0]
+                max_date = max_date_lookup[ticker]
                 data = data.reset_index()
+                
                 ticker_df = pl.from_pandas(data).select(
                     pl.lit(ticker).alias("ticker"),
                     pl.col("Date").dt.date().alias("date"),
@@ -141,7 +182,12 @@ def get_stock_prices_yfinance_batch(
                     pl.col("Close").alias("close"),
                     pl.col("Volume").cast(pl.Float64).alias("volume"),
                 )
-                all_data.append(ticker_df)
+                
+                # Filter to only dates up to max_date
+                ticker_df = ticker_df.filter(pl.col("date") <= max_date)
+                
+                if not ticker_df.is_empty():
+                    all_data.append(ticker_df)
                 continue
 
             # Handle multiple tickers (MultiIndex columns grouped by ticker)
@@ -150,10 +196,10 @@ def get_stock_prices_yfinance_batch(
                     if ticker not in data.columns.get_level_values(0):
                         continue
 
+                    max_date = max_date_lookup[ticker]
                     ticker_data = data[ticker].copy()
                     ticker_data = ticker_data.reset_index()
 
-                    # Skip if no data for this ticker
                     if ticker_data.empty or ticker_data["Close"].isna().all():
                         continue
 
@@ -167,8 +213,10 @@ def get_stock_prices_yfinance_batch(
                         pl.col("Volume").cast(pl.Float64).alias("volume"),
                     )
 
-                    # Drop rows with null prices
-                    ticker_df = ticker_df.drop_nulls(subset=["close"])
+                    # Filter to only dates up to max_date and drop nulls
+                    ticker_df = ticker_df.filter(pl.col("date") <= max_date).drop_nulls(
+                        subset=["close"]
+                    )
 
                     if not ticker_df.is_empty():
                         all_data.append(ticker_df)
@@ -189,7 +237,7 @@ def get_stock_prices_yfinance_batch(
 
 @task
 def get_stock_prices_yfinance_by_year(
-    tickers: list[str], start: dt.datetime, end: dt.datetime
+    tickers_df: pl.DataFrame, start: dt.datetime, end: dt.datetime
 ) -> pl.DataFrame:
     """
     Fetch stock prices in batches by year.
@@ -204,7 +252,7 @@ def get_stock_prices_yfinance_by_year(
 
         logger.info(f"Fetching year {year}: {year_start.date()} to {year_end.date()}")
 
-        stock_prices = get_stock_prices_yfinance_batch(tickers, year_start, year_end)
+        stock_prices = get_stock_prices_yfinance_batch(tickers_df, year_start, year_end)
 
         if not stock_prices.is_empty():
             stock_prices_list.append(stock_prices)
@@ -253,12 +301,13 @@ def upload_and_merge_stock_prices_yfinance_df(stock_prices_df: pl.DataFrame):
 def stock_prices_yfinance_backfill_flow():
     """
     Grabbing yfinance data from 2000 to present day.
+    Uses universe date ranges to avoid fetching data for delisted tickers.
     """
     start = dt.datetime(2000, 1, 1, tzinfo=TIME_ZONE)
     end = dt.datetime.now(TIME_ZONE) - dt.timedelta(days=1)
 
-    tickers = get_tickers()
-    stock_prices_df = get_stock_prices_yfinance_by_year(tickers, start, end)
+    tickers_df = get_tickers_with_date_range()
+    stock_prices_df = get_stock_prices_yfinance_by_year(tickers_df, start, end)
     upload_and_merge_stock_prices_yfinance_df(stock_prices_df)
 
 
@@ -277,6 +326,6 @@ def stock_prices_yfinance_daily_flow():
     start = dt.datetime.combine(yesterday, dt.time(0, 0, 0)).replace(tzinfo=TIME_ZONE)
     end = dt.datetime.combine(yesterday, dt.time(23, 59, 59)).replace(tzinfo=TIME_ZONE)
 
-    tickers = get_tickers()
-    stock_prices_df = get_stock_prices_yfinance_by_year(tickers, start, end)
+    tickers_df = get_tickers_with_date_range()
+    stock_prices_df = get_stock_prices_yfinance_by_year(tickers_df, start, end)
     upload_and_merge_stock_prices_yfinance_df(stock_prices_df)
