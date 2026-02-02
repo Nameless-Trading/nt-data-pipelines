@@ -142,19 +142,24 @@ def get_stock_prices_yfinance_batch(
     end_naive = end.replace(tzinfo=None)
 
     # Filter to only tickers active during this period
-    active_tickers_df = tickers_df.filter(pl.col("max_date") >= start.date())
+    # - max_date >= start: ticker wasn't delisted before this period
+    # - min_date <= end: ticker existed by the end of this period
+    active_tickers_df = tickers_df.filter(
+        (pl.col("max_date") >= start.date()) & 
+        (pl.col("min_date") <= end.date())
+    )
     
     if active_tickers_df.is_empty():
         logger.info(f"No active tickers for period {start.date()} to {end.date()}")
         return pl.DataFrame(schema=_empty_schema())
 
-    # Build a lookup for max_date by ticker
-    max_date_lookup = {
-        row["ticker"]: row["max_date"] 
+    # Build lookups for date ranges by ticker
+    date_range_lookup = {
+        row["ticker"]: {"min_date": row["min_date"], "max_date": row["max_date"]}
         for row in active_tickers_df.iter_rows(named=True)
     }
     
-    tickers = list(max_date_lookup.keys())
+    tickers = list(date_range_lookup.keys())
     logger.info(f"Fetching {len(tickers)} active tickers (filtered from {len(tickers_df)})")
 
     all_data = []
@@ -184,7 +189,7 @@ def get_stock_prices_yfinance_batch(
             # Handle single ticker case (no MultiIndex)
             if len(batch) == 1:
                 db_ticker = batch[0]  # Original db format
-                max_date = max_date_lookup[db_ticker]
+                max_date = date_range_lookup[db_ticker]["max_date"]
                 data = data.reset_index()
                 
                 ticker_df = pl.from_pandas(data).select(
@@ -211,7 +216,7 @@ def get_stock_prices_yfinance_batch(
                     if yf_ticker not in data.columns.get_level_values(0):
                         continue
 
-                    max_date = max_date_lookup[db_ticker]
+                    max_date = date_range_lookup[db_ticker]["max_date"]
                     ticker_data = data[yf_ticker].copy()
                     ticker_data = ticker_data.reset_index()
 
