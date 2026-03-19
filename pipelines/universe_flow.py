@@ -28,7 +28,7 @@ def get_wikipedia_data() -> tuple[pd.DataFrame]:
     response.raise_for_status()
 
     # Read the HTML tables from Wikipedia
-    [current_constituents_df, constituent_changes_df] = pd.read_html(
+    [current_constituents_df, constituent_changes_df, _] = pd.read_html(
         io.StringIO(response.text)
     )
 
