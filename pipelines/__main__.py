@@ -6,7 +6,6 @@ from factor_covariances_flow import (factor_covariances_backfill_flow,
                                      factor_covariances_daily_flow)
 from factor_model_flow import (factor_model_backfill_flow,
                                factor_model_daily_flow)
-from history_flow import etf_history_daily_flow, stock_history_daily_flow
 from portfolio_history_flow import portfolio_history_daily_flow
 from portfolio_weights_flow import portfolio_weights_daily_flow
 from prefect import flow, serve
@@ -34,8 +33,6 @@ def daily_flow():
     betas_daily_flow()  # Depends on stock_returns and benchmark_returns
     portfolio_weights_daily_flow()  # Depends on everything
     portfolio_history_daily_flow()
-    etf_history_daily_flow()
-    stock_history_daily_flow()
 
 
 @flow
