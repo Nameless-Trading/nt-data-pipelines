@@ -22,7 +22,9 @@ def get_account_value():
 
 @task
 def get_target_notionals(weights: pl.DataFrame, account_value: float) -> pl.DataFrame:
-    return weights.select(
+    return weights.with_columns(
+        pl.col('weight').clip(lower_bound=0)
+    ).select(
         "ticker",
         pl.col("weight").mul(pl.lit(account_value)).round(2).alias("target_notional"),
     ).sort("target_notional", descending=True)
