@@ -37,8 +37,14 @@ def get_current_notionals() -> pl.DataFrame:
     positions_raw = alpaca_client.get_all_positions()
 
     positions_clean = pl.DataFrame(
-        {"ticker": position.symbol, "current_notional": float(position.market_value)}
-        for position in positions_raw
+        [
+            {
+                "ticker": position.symbol,
+                "current_notional": float(position.market_value or 0),
+            }
+            for position in positions_raw
+        ],
+        schema={"ticker": pl.String, "current_notional": pl.Float64},
     ).sort("current_notional", descending=True)
 
     return positions_clean
