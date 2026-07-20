@@ -143,35 +143,82 @@ def place_all_orders(notional_deltas: pl.DataFrame):
 
 @task
 def wait_for_orders_to_fill(
-    max_wait_minutes: int = 10, check_interval_seconds: int = 60
+    expected_orders: int,
+    max_wait_minutes: int = 10,
+    check_interval_seconds: int = 15,
+    initial_delay_seconds: int = 10,
 ) -> bool:
     """
-    Poll until all open orders are filled or max wait time is reached.
+    Poll until all submitted orders reach a terminal state or max wait is reached.
 
-    Returns True if all orders filled, False if timed out with orders still open.
+    We wait until ``expected_orders`` orders have filled (and none remain open)
+    rather than trusting a single "0 open orders" reading. Right after submission
+    Alpaca may not yet report the new orders as OPEN (they sit in accepted /
+    pending_new), so an immediate check could see zero open orders and return
+    prematurely — causing the daily summary to snapshot a partially-executed
+    rebalance (sells done, buys still filling). An initial delay lets orders
+    register, and requiring two consecutive "0 open" reads guards against the
+    case where some orders never fill (e.g. rejected) so we don't wait forever.
+
+    Returns True if all expected orders filled (or in-flight orders drained),
+    False if timed out with orders still open.
     """
     logger = get_run_logger()
-    logger.info("Waiting for orders to fill...")
+    logger.info(f"Waiting for {expected_orders} orders to fill...")
 
     alpaca_client = get_alpaca_trading_client()
-    elapsed_time = 0
+
+    # Give just-submitted orders time to register before the first poll.
+    time.sleep(initial_delay_seconds)
+
+    today = dt.datetime.now(ZoneInfo("America/New_York")).date()
+    market_open = dt.datetime.combine(
+        today, dt.time(9, 30), tzinfo=ZoneInfo("America/New_York")
+    )
+
+    elapsed_time = initial_delay_seconds
+    consecutive_empty = 0
 
     while elapsed_time < max_wait_minutes * 60:
-        filter = GetOrdersRequest(status=QueryOrderStatus.OPEN)
-        open_orders = alpaca_client.get_orders(filter)
+        open_orders = alpaca_client.get_orders(
+            GetOrdersRequest(status=QueryOrderStatus.OPEN)
+        )
+        closed_orders = alpaca_client.get_orders(
+            GetOrdersRequest(status=QueryOrderStatus.CLOSED, after=market_open)
+        )
+        filled_count = sum(
+            1
+            for o in closed_orders
+            if o.filled_at is not None and o.filled_qty and float(o.filled_qty) > 0
+        )
 
-        if len(open_orders) == 0:
-            logger.info(f"All orders filled after {elapsed_time} seconds")
+        consecutive_empty = consecutive_empty + 1 if len(open_orders) == 0 else 0
+
+        if len(open_orders) == 0 and filled_count >= expected_orders:
+            logger.info(
+                f"All {filled_count} orders filled after {elapsed_time} seconds"
+            )
             return True
 
+        # Nothing left in flight for two consecutive checks: some orders may have
+        # been rejected/canceled, so stop waiting instead of blocking to timeout.
+        if consecutive_empty >= 2:
+            logger.warning(
+                f"No open orders remain but only {filled_count}/{expected_orders} "
+                f"filled; remaining orders did not fill. Proceeding."
+            )
+            return filled_count >= expected_orders
+
         logger.info(
-            f"Still have {len(open_orders)} open orders, waiting {check_interval_seconds}s..."
+            f"{filled_count}/{expected_orders} filled, {len(open_orders)} open, "
+            f"waiting {check_interval_seconds}s..."
         )
         time.sleep(check_interval_seconds)
         elapsed_time += check_interval_seconds
 
     logger.warning(
-        f"Reached max wait time of {max_wait_minutes} minutes, some orders may still be open"
+        f"Reached max wait time of {max_wait_minutes} minutes, "
+        f"{filled_count}/{expected_orders} filled, some orders may still be open"
     )
     return False
 
@@ -305,6 +352,7 @@ def trading_daily_flow():
     close_positions(positions_to_close)
     place_all_orders(notional_deltas)
 
-    wait_for_orders_to_fill()
+    expected_orders = len(positions_to_close) + notional_deltas.height
+    wait_for_orders_to_fill(expected_orders)
     filled_orders = get_todays_filled_orders()
     send_fill_status_to_slack(filled_orders)
