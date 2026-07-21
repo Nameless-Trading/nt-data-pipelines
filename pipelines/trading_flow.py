@@ -330,8 +330,11 @@ def trading_daily_flow():
 
     weights = get_portfolio_weights(last_trading_date, last_trading_date)
 
-    if not len(weights) > 0:
-        raise RuntimeError("Portfolio weights appear to not be empty!")
+    if len(weights) == 0:
+        raise RuntimeError(
+            f"No portfolio weights found for {last_trading_date}. "
+            "The daily flow likely did not generate weights for that date."
+        )
 
     open_orders = get_open_orders()
 
