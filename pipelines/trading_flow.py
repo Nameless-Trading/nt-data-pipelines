@@ -5,7 +5,8 @@ from zoneinfo import ZoneInfo
 import pandas_market_calendars as mcal
 import polars as pl
 from alpaca.trading import GetOrdersRequest, MarketOrderRequest
-from alpaca.trading.enums import OrderSide, QueryOrderStatus, TimeInForce
+from alpaca.trading.enums import (OrderSide, OrderStatus, QueryOrderStatus,
+                                  TimeInForce)
 from clients import get_alpaca_trading_client
 from prefect import flow, get_run_logger, task
 from utils import get_portfolio_weights
@@ -111,7 +112,7 @@ def cancel_all_orders():
 
 
 @task
-def place_order(ticker: str, notional_delta: float):
+def place_order(ticker: str, notional_delta: float) -> str:
     alpaca_client = get_alpaca_trading_client()
 
     side = OrderSide.SELL if notional_delta < 0 else OrderSide.BUY
@@ -122,105 +123,111 @@ def place_order(ticker: str, notional_delta: float):
         symbol=ticker, notional=notional, side=side, time_in_force=TimeInForce.DAY
     )
 
-    alpaca_client.submit_order(order_data=order_data)
+    order = alpaca_client.submit_order(order_data=order_data)
+    return str(order.id)
 
 
 @task
-def close_positions(positions_to_close: list[str]):
+def close_positions(positions_to_close: list[str]) -> list[str]:
+    order_ids = []
     for ticker in positions_to_close:
         alpaca_client = get_alpaca_trading_client()
 
-        alpaca_client.close_position(
+        order = alpaca_client.close_position(
             symbol_or_asset_id=ticker,
         )
+        order_ids.append(str(order.id))
+
+    return order_ids
 
 
 @task
-def place_all_orders(notional_deltas: pl.DataFrame):
+def place_all_orders(notional_deltas: pl.DataFrame) -> list[str]:
+    order_ids = []
     for ticker, notional_delta in notional_deltas.iter_rows():
-        place_order(ticker, notional_delta)
+        order_ids.append(place_order(ticker, notional_delta))
+
+    return order_ids
 
 
 @task
 def wait_for_orders_to_fill(
-    expected_orders: int,
+    order_ids: list[str],
     max_wait_minutes: int = 10,
     check_interval_seconds: int = 15,
     initial_delay_seconds: int = 10,
 ) -> bool:
     """
-    Poll until all submitted orders reach a terminal state or max wait is reached.
+    Poll the specific orders we submitted until every one reaches a terminal
+    state (filled / canceled / rejected / expired), or ``max_wait_minutes`` is
+    reached.
 
-    We wait until ``expected_orders`` orders have filled (and none remain open)
-    rather than trusting a single "0 open orders" reading. Right after submission
-    Alpaca may not yet report the new orders as OPEN (they sit in accepted /
-    pending_new), so an immediate check could see zero open orders and return
-    prematurely — causing the daily summary to snapshot a partially-executed
-    rebalance (sells done, buys still filling). An initial delay lets orders
-    register, and requiring two consecutive "0 open" reads guards against the
-    case where some orders never fill (e.g. rejected) so we don't wait forever.
+    We track the exact order IDs rather than counting how many orders show up as
+    OPEN vs CLOSED. Right after submission Alpaca reports new orders as
+    ``pending_new`` / ``accepted`` (not OPEN), and the buys are funded by the
+    proceeds of the sells so they routinely fill later. Counting OPEN orders let
+    the daily summary snapshot a partial rebalance: once the sells cleared OPEN
+    but before the buys appeared there, a "0 open orders" reading fired and the
+    summary showed far fewer buys than sells. Watching each submitted order until
+    it is terminal removes that race entirely.
 
-    Returns True if all expected orders filled (or in-flight orders drained),
-    False if timed out with orders still open.
+    Returns True if all tracked orders reached a terminal state, False on timeout.
     """
     logger = get_run_logger()
-    logger.info(f"Waiting for {expected_orders} orders to fill...")
+
+    if not order_ids:
+        logger.info("No orders to wait for")
+        return True
+
+    logger.info(f"Waiting for {len(order_ids)} orders to reach a terminal state...")
 
     alpaca_client = get_alpaca_trading_client()
 
+    terminal_states = {
+        OrderStatus.FILLED,
+        OrderStatus.CANCELED,
+        OrderStatus.EXPIRED,
+        OrderStatus.REJECTED,
+        OrderStatus.REPLACED,
+        OrderStatus.DONE_FOR_DAY,
+    }
+
     # Give just-submitted orders time to register before the first poll.
     time.sleep(initial_delay_seconds)
-
-    today = dt.datetime.now(ZoneInfo("America/New_York")).date()
-    market_open = dt.datetime.combine(
-        today, dt.time(9, 30), tzinfo=ZoneInfo("America/New_York")
-    )
-
     elapsed_time = initial_delay_seconds
-    consecutive_empty = 0
 
-    while elapsed_time < max_wait_minutes * 60:
-        open_orders = alpaca_client.get_orders(
-            GetOrdersRequest(status=QueryOrderStatus.OPEN)
-        )
-        closed_orders = alpaca_client.get_orders(
-            GetOrdersRequest(status=QueryOrderStatus.CLOSED, after=market_open)
-        )
-        filled_count = sum(
-            1
-            for o in closed_orders
-            if o.filled_at is not None and o.filled_qty and float(o.filled_qty) > 0
-        )
+    while True:
+        pending = []
+        filled_count = 0
+        for order_id in order_ids:
+            order = alpaca_client.get_order_by_id(order_id)
+            if order.status in terminal_states:
+                if order.status == OrderStatus.FILLED:
+                    filled_count += 1
+            else:
+                pending.append(order_id)
 
-        consecutive_empty = consecutive_empty + 1 if len(open_orders) == 0 else 0
-
-        if len(open_orders) == 0 and filled_count >= expected_orders:
+        if not pending:
             logger.info(
-                f"All {filled_count} orders filled after {elapsed_time} seconds"
+                f"All {len(order_ids)} orders terminal ({filled_count} filled) "
+                f"after {elapsed_time} seconds"
             )
             return True
 
-        # Nothing left in flight for two consecutive checks: some orders may have
-        # been rejected/canceled, so stop waiting instead of blocking to timeout.
-        if consecutive_empty >= 2:
+        if elapsed_time >= max_wait_minutes * 60:
             logger.warning(
-                f"No open orders remain but only {filled_count}/{expected_orders} "
-                f"filled; remaining orders did not fill. Proceeding."
+                f"Reached max wait time of {max_wait_minutes} minutes with "
+                f"{len(pending)} orders still not terminal "
+                f"({filled_count}/{len(order_ids)} filled)"
             )
-            return filled_count >= expected_orders
+            return False
 
         logger.info(
-            f"{filled_count}/{expected_orders} filled, {len(open_orders)} open, "
+            f"{filled_count}/{len(order_ids)} filled, {len(pending)} still pending, "
             f"waiting {check_interval_seconds}s..."
         )
         time.sleep(check_interval_seconds)
         elapsed_time += check_interval_seconds
-
-    logger.warning(
-        f"Reached max wait time of {max_wait_minutes} minutes, "
-        f"{filled_count}/{expected_orders} filled, some orders may still be open"
-    )
-    return False
 
 
 @task
@@ -352,10 +359,9 @@ def trading_daily_flow():
         target_notionals, current_notionals, positions_to_close
     )
 
-    close_positions(positions_to_close)
-    place_all_orders(notional_deltas)
+    close_order_ids = close_positions(positions_to_close)
+    order_ids = place_all_orders(notional_deltas)
 
-    expected_orders = len(positions_to_close) + notional_deltas.height
-    wait_for_orders_to_fill(expected_orders)
+    wait_for_orders_to_fill(close_order_ids + order_ids)
     filled_orders = get_todays_filled_orders()
     send_fill_status_to_slack(filled_orders)
