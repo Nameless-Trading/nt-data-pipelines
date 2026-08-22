@@ -7,13 +7,15 @@ def solve_quadratic_problem(
     n_assets: int,
     alphas: np.ndarray,
     covariance_matrix: np.ndarray,
+    benchmark_weights: np.ndarray,
     lambda_: float,
 ):
     weights = cp.Variable(n_assets)
+    active_weights = weights - benchmark_weights
 
     objective = cp.Maximize(
-        cp.matmul(weights, alphas)
-        - 0.5 * lambda_ * cp.quad_form(weights, covariance_matrix)
+        cp.matmul(active_weights, alphas)
+        - 0.5 * lambda_ * cp.quad_form(active_weights, covariance_matrix)
     )
 
     constraints = [
@@ -30,14 +32,25 @@ def solve_quadratic_problem(
 def get_optimal_weights(
     alphas: pl.DataFrame,
     covariance_matrix: pl.DataFrame,
+    benchmark_weights: pl.DataFrame,
     lambda_: float,
 ) -> pl.DataFrame:
     tickers = alphas["ticker"].sort().to_list()
+
+    # Align benchmark weights to the alpha/covariance ticker ordering,
+    # filling any universe mismatch with a zero benchmark weight.
+    benchmark_array = (
+        pl.DataFrame({"ticker": tickers})
+        .join(benchmark_weights.select("ticker", "weight"), on="ticker", how="left")
+        .with_columns(pl.col("weight").fill_null(0.0))["weight"]
+        .to_numpy()
+    )
 
     optimal_weights = solve_quadratic_problem(
         n_assets=len(tickers),
         alphas=alphas["alpha"].to_numpy(),
         covariance_matrix=covariance_matrix.drop("ticker").to_numpy(),
+        benchmark_weights=benchmark_array,
         lambda_=lambda_,
     )
 
@@ -106,7 +119,9 @@ def get_optimal_weights_dynamic(
         else:
             lambda_ = predict_lambda(data, target_active_risk)
 
-        optimal_weights = get_optimal_weights(alphas, covariance_matrix, lambda_)
+        optimal_weights = get_optimal_weights(
+            alphas, covariance_matrix, benchmark_weights, lambda_
+        )
 
         active_weights = get_active_weights(optimal_weights, benchmark_weights)
         active_risk = get_active_risk(active_weights, covariance_matrix)
