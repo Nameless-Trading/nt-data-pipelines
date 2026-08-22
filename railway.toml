@@ -4,3 +4,7 @@ buildCommand = "uv sync"
 
 [deploy]
 startCommand = "uv run python pipelines"
+# serve() is a long-running scheduler; always resurrect it if the process
+# exits, otherwise scheduled flows silently stop until a manual redeploy.
+restartPolicyType = "ALWAYS"
+restartPolicyMaxRetries = 10
