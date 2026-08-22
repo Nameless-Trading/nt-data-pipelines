@@ -78,7 +78,11 @@ def clean_constituent_changes_df(constituent_changes_df: pd.DataFrame) -> pl.Dat
     return (
         pl.from_pandas(stacked_df)
         .rename({col: col.replace(" ", "_").lower() for col in stacked_df.columns})
-        .with_columns(pl.col("effective_date").str.strptime(pl.Date, "%B %d, %Y"))
+        .with_columns(
+            pl.col("effective_date").str.strptime(pl.Date, "%B %d, %Y"),
+            # A few cells carry trailing wiki markup (e.g. "ITT |"); keep just the symbol.
+            pl.col("ticker").str.extract(r"^\s*([A-Za-z0-9.\-]+)").alias("ticker"),
+        )
         .drop_nulls("ticker")
     )
 
