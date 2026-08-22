@@ -4,6 +4,7 @@ import bear_lake as bl
 import polars as pl
 from clients import get_bear_lake_client
 from prefect import task
+from variables import PRODUCTION_SIGNAL
 
 
 @task
@@ -56,7 +57,29 @@ def get_alphas(start: dt.date, end: dt.date) -> pl.DataFrame:
     bear_lake_client = get_bear_lake_client()
     return bear_lake_client.query(
         bl.table("universe")
-        .join(other=bl.table("alphas"), on=["date", "ticker"], how="left")
+        .join(
+            other=bl.table("alphas").filter(
+                pl.col("signal").eq(PRODUCTION_SIGNAL)
+            ),
+            on=["date", "ticker"],
+            how="left",
+        )
+        .filter(pl.col("date").is_between(start, end), pl.col("alpha").is_not_null())
+        .select("date", "ticker", "alpha")
+        .sort("ticker", "date")
+    )
+
+
+@task
+def get_signal_alphas(start: dt.date, end: dt.date, signal: str) -> pl.DataFrame:
+    bear_lake_client = get_bear_lake_client()
+    return bear_lake_client.query(
+        bl.table("universe")
+        .join(
+            other=bl.table("alphas").filter(pl.col("signal").eq(signal)),
+            on=["date", "ticker"],
+            how="left",
+        )
         .filter(pl.col("date").is_between(start, end), pl.col("alpha").is_not_null())
         .select("date", "ticker", "alpha")
         .sort("ticker", "date")

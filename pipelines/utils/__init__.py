@@ -3,9 +3,12 @@ from .covariance_matrix import get_covariance_matrix
 from .data import (get_alphas, get_benchmark_returns, get_benchmark_weights,
                    get_etf_returns, get_factor_covariances,
                    get_factor_loadings, get_idio_vol, get_portfolio_weights,
-                   get_prices, get_stock_returns, get_universe,
-                   get_universe_returns)
+                   get_prices, get_signal_alphas, get_stock_returns,
+                   get_universe, get_universe_returns)
 from .portfolio import get_optimal_weights_dynamic
+from .signals import (calculate_alphas, calculate_scores,
+                      upload_and_merge_alphas, upload_and_merge_scores,
+                      upload_and_merge_signals)
 
 __all__ = [
     "get_universe_returns",
@@ -14,6 +17,7 @@ __all__ = [
     "get_covariance_matrix",
     "get_optimal_weights_dynamic",
     "get_alphas",
+    "get_signal_alphas",
     "get_benchmark_weights",
     "get_benchmark_returns",
     "get_factor_covariances",
@@ -24,4 +28,9 @@ __all__ = [
     "get_last_market_date",
     "get_trading_date_range",
     "get_universe",
+    "calculate_scores",
+    "calculate_alphas",
+    "upload_and_merge_signals",
+    "upload_and_merge_scores",
+    "upload_and_merge_alphas",
 ]
