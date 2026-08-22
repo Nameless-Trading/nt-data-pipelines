@@ -1,11 +1,13 @@
 from benchmark_flow import benchmark_backfill_flow, benchmark_daily_flow
 from betas_flow import betas_backfill_flow, betas_daily_flow
 from calendar_flow import calendar_backfill_flow
+from composite_flow import composite_backfill_flow, composite_daily_flow
 from etf_prices_flow import etf_prices_backfill_flow, etf_prices_daily_flow
 from factor_covariances_flow import (factor_covariances_backfill_flow,
                                      factor_covariances_daily_flow)
 from factor_model_flow import (factor_model_backfill_flow,
                                factor_model_daily_flow)
+from momentum_flow import momentum_backfill_flow, momentum_daily_flow
 from portfolio_history_flow import portfolio_history_daily_flow
 from portfolio_weights_flow import portfolio_weights_daily_flow
 from prefect import flow, serve
@@ -29,6 +31,8 @@ def daily_flow():
     factor_model_daily_flow()  # Depends on stock_returns and etf_returns
     factor_covariances_daily_flow()  # Depends on etf_returns
     reversal_daily_flow()  # Depends on stock_returns and factor_model
+    momentum_daily_flow()  # Depends on stock_returns and factor_model
+    composite_daily_flow()  # Depends on reversal and momentum alphas
     benchmark_daily_flow()  # Depends on stock_returns
     betas_daily_flow()  # Depends on stock_returns and benchmark_returns
     portfolio_weights_daily_flow()  # Depends on everything
@@ -45,6 +49,8 @@ def backfill_flow():
     factor_model_backfill_flow()  # Depends on stock_returns and etf_returns
     factor_covariances_backfill_flow()  # Depends on etf_returns
     reversal_backfill_flow()  # Depends on stock_returns and factor_model
+    momentum_backfill_flow()  # Depends on stock_returns and factor_model
+    composite_backfill_flow()  # Depends on reversal and momentum alphas
     benchmark_backfill_flow()  # Depends on stock_returns
     betas_backfill_flow()  # Depends on stock_returns and benchmark_returns
 

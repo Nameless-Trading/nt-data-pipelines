@@ -6,13 +6,17 @@ from utils import (calculate_alphas, calculate_scores, get_idio_vol,
                    get_stock_returns, get_trading_date_range,
                    upload_and_merge_alphas, upload_and_merge_scores,
                    upload_and_merge_signals)
-from variables import REVERSAL_WINDOW
+from variables import MOMENTUM_LAG, MOMENTUM_WINDOW
 
-SIGNAL_NAME = "reversal"
+SIGNAL_NAME = "momentum"
+
+# Trading days of history needed to observe the signal on a given date
+LOOKBACK = MOMENTUM_WINDOW + MOMENTUM_LAG
 
 
 @task
 def calculate_signals(stock_returns: pl.DataFrame) -> pl.DataFrame:
+    # 12-1 momentum: 11-month cumulative log return, lagged 1 month.
     return (
         stock_returns.sort("ticker", "date")
         .select(
@@ -22,8 +26,8 @@ def calculate_signals(stock_returns: pl.DataFrame) -> pl.DataFrame:
             pl.lit(SIGNAL_NAME).alias("signal"),
             pl.col("return")
             .log1p()
-            .rolling_sum(REVERSAL_WINDOW)
-            .mul(-1)
+            .rolling_sum(MOMENTUM_WINDOW)
+            .shift(MOMENTUM_LAG)
             .over("ticker")
             .alias("value"),
         )
@@ -33,7 +37,7 @@ def calculate_signals(stock_returns: pl.DataFrame) -> pl.DataFrame:
 
 
 @flow
-def reversal_backfill_flow():
+def momentum_backfill_flow():
     start = dt.date(2020, 7, 28)
     end = dt.date.today() - dt.timedelta(days=1)
 
@@ -50,8 +54,8 @@ def reversal_backfill_flow():
 
 
 @flow
-def reversal_daily_flow():
-    date_range = get_trading_date_range(window=REVERSAL_WINDOW)
+def momentum_daily_flow():
+    date_range = get_trading_date_range(window=LOOKBACK)
 
     start = date_range["date"].min()
     end = date_range["date"].max()
