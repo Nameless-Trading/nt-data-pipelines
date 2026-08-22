@@ -13,23 +13,28 @@ load_dotenv()
 
 
 @task
-def get_wikipedia_data() -> tuple[pd.DataFrame]:
+def get_wikipedia_data() -> tuple[pd.DataFrame, pd.DataFrame]:
     # Get Wikipedia user agent
     wikipedia_user_agent = os.getenv("WIKIPEDIA_USER_AGENT")
 
     if not wikipedia_user_agent:
         raise ValueError("WIKIPEDIA_USER_AGENT not set!")
 
-    # Request Wikipedia tables
-    wikipedia_url = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
     headers = {"User-Agent": wikipedia_user_agent}
 
-    response = requests.get(wikipedia_url, headers=headers)
-    response.raise_for_status()
+    def _first_table(url: str) -> pd.DataFrame:
+        response = requests.get(url, headers=headers)
+        response.raise_for_status()
+        return pd.read_html(io.StringIO(response.text))[0]
 
-    # Read the HTML tables from Wikipedia
-    [current_constituents_df, constituent_changes_df, _] = pd.read_html(
-        io.StringIO(response.text)
+    # Current constituents live on the main list page. The "Selected changes"
+    # table was split out onto a separate page in 2026, so it must be fetched
+    # from there (the main page no longer contains it).
+    current_constituents_df = _first_table(
+        "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
+    )
+    constituent_changes_df = _first_table(
+        "https://en.wikipedia.org/wiki/Historical_components_of_the_S%26P_500"
     )
 
     return current_constituents_df, constituent_changes_df
