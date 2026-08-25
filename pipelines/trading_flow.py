@@ -4,6 +4,7 @@ from zoneinfo import ZoneInfo
 
 import pandas_market_calendars as mcal
 import polars as pl
+from alpaca.common.enums import Sort
 from alpaca.trading import GetOrdersRequest, MarketOrderRequest
 from alpaca.trading.enums import (OrderSide, OrderStatus, QueryOrderStatus,
                                   TimeInForce)
@@ -244,13 +245,31 @@ def get_todays_filled_orders() -> list[dict]:
         today, dt.time(9, 30), tzinfo=ZoneInfo("America/New_York")
     )
 
-    filter = GetOrdersRequest(
-        status=QueryOrderStatus.CLOSED,
-        after=market_open,
-        until=dt.datetime.now(ZoneInfo("America/New_York")),
-    )
-
-    orders = alpaca_client.get_orders(filter)
+    # Alpaca caps get_orders at 500 per request (default 50), so paginate in
+    # ascending order using the submitted_at of the last order as the cursor.
+    # Without this, a large rebalance is silently truncated and the daily
+    # summary's buy/sell totals no longer reconcile.
+    now = dt.datetime.now(ZoneInfo("America/New_York"))
+    page_size = 500
+    after = market_open
+    orders = []
+    while True:
+        filter = GetOrdersRequest(
+            status=QueryOrderStatus.CLOSED,
+            after=after,
+            until=now,
+            direction=Sort.ASC,
+            limit=page_size,
+        )
+        page = alpaca_client.get_orders(filter)
+        if not page:
+            break
+        orders.extend(page)
+        if len(page) < page_size:
+            break
+        # `after` is exclusive, so advancing to the last submitted_at avoids
+        # both gaps and duplicates on the next page.
+        after = page[-1].submitted_at
 
     filled_orders = []
     for order in orders:
