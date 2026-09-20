@@ -54,7 +54,8 @@ def get_portfolio_weights_for_date_parallel(
 
     weights_df = optimal_weights.with_columns(pl.lit(date_).alias("date"))
     metrics_df = pl.DataFrame(
-        {"lambda": [lambda_], "active_risk": [active_risk], "date": [str(date_)]}
+        {"lambda": [lambda_], "active_risk": [active_risk], "date": [str(date_)]},
+        schema={"lambda": pl.Float64, "active_risk": pl.Float64, "date": pl.String},
     )
 
     return weights_df, metrics_df
@@ -85,7 +86,8 @@ def get_portfolio_weights_for_date(
         pl.lit(date_).alias("date"), pl.lit(date_.year).alias("year")
     )
     metrics_df = pl.DataFrame(
-        {"lambda": [lambda_], "active_risk": [active_risk], "date": [str(date_)]}
+        {"lambda": [lambda_], "active_risk": [active_risk], "date": [str(date_)]},
+        schema={"lambda": pl.Float64, "active_risk": pl.Float64, "date": pl.String},
     )
 
     return weights_df, metrics_df

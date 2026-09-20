@@ -115,7 +115,7 @@ def get_optimal_weights_dynamic(
 
     while abs(active_risk - target_active_risk) > error:
         if lambda_ is None:
-            lambda_ = 100
+            lambda_ = 100.0
         else:
             lambda_ = predict_lambda(data, target_active_risk)
 
