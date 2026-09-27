@@ -65,4 +65,8 @@ if __name__ == "__main__":
             schedule=Cron("30 7 * * *", timezone="America/Denver"),
         ),
         backfill_flow.to_deployment(name="backfill-flow"),
+        # Railway overlaps deploys: the old container is stopped after the new
+        # one registers, and pausing on shutdown would silently pause the
+        # schedules the new container just resumed.
+        pause_on_shutdown=False,
     )
